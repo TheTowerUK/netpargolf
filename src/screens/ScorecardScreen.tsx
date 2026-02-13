@@ -7,6 +7,7 @@ import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } fr
 import type { Course } from '../core/course';
 import { loadCourse } from '../storage/courseStorage';
 import { loadRound, type PersistedRoundV1 } from '../storage/roundStorage';
+import { colors } from '../theme/colors';
 
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -407,22 +408,24 @@ function escapeHtml(s: string) {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#fff', padding: 16 },
+  // Header controls only — theme colours
+  screen: { flex: 1, backgroundColor: colors.background, padding: 16 },
   header: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 12 },
-  title: { fontSize: 22, fontWeight: '900' },
-  subTitle: { fontSize: 12, color: '#222', marginTop: 2, fontWeight: '800' },
-  meta: { fontSize: 11, color: '#666', marginTop: 6 },
-  courseNote: { fontSize: 11, color: '#b45309', marginTop: 4, fontStyle: 'italic' },
+  title: { fontSize: 22, fontWeight: '900', color: colors.primary },
+  subTitle: { fontSize: 12, color: colors.textSecondary, marginTop: 2, fontWeight: '800' },
+  meta: { fontSize: 11, color: colors.textSecondary, marginTop: 6 },
+  courseNote: { fontSize: 11, color: colors.warning, marginTop: 4, fontStyle: 'italic' },
 
-  btn: { paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, backgroundColor: '#f3f3f3' },
-  btnText: { fontWeight: '900', color: '#111', fontSize: 12 },
-  btnPrimary: { backgroundColor: '#111' },
-  btnPrimaryText: { color: '#fff' },
+  btn: { paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, backgroundColor: colors.primarySoft },
+  btnText: { fontWeight: '900', color: colors.textPrimary, fontSize: 12 },
+  btnPrimary: { backgroundColor: colors.primary },
+  btnPrimaryText: { color: colors.textInverse },
 
-  empty: { borderWidth: 1, borderColor: '#e7e7e7', borderRadius: 14, padding: 12, marginBottom: 12, backgroundColor: '#fff' },
-  emptyTitle: { fontWeight: '900', marginBottom: 6 },
-  emptyText: { color: '#555', lineHeight: 18, fontSize: 13 },
+  empty: { borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 12, marginBottom: 12, backgroundColor: colors.card },
+  emptyTitle: { fontWeight: '900', marginBottom: 6, color: colors.textPrimary },
+  emptyText: { color: colors.textSecondary, lineHeight: 18, fontSize: 13 },
 
+  // Table — strictly black/white, no theme
   table: { borderWidth: 1, borderColor: '#111' },
   row: { flexDirection: 'row' },
   headerRow: { backgroundColor: '#f2f2f2' },
@@ -440,10 +443,10 @@ const styles = StyleSheet.create({
   totalText: { fontWeight: '900', fontSize: 12 },
 
   handicapRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
-  handicapLabel: { fontSize: 12, fontWeight: '900' },
+  handicapLabel: { fontSize: 12, fontWeight: '900', color: colors.textPrimary },
   handicapInput: {
     borderWidth: 1,
-    borderColor: '#111',
+    borderColor: colors.border,
     borderRadius: 8,
     paddingVertical: 6,
     paddingHorizontal: 10,
