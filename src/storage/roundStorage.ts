@@ -27,6 +27,22 @@ export type PersistedRoundV1 = {
 
 const KEY = 'netpargolf.round.v1';
 
+/** True if round exists and has at least one gross score or holeNumber > 1. */
+export function hasInProgressRound(round: PersistedRoundV1 | null): boolean {
+  if (!round) return false;
+  if (round.holeNumber > 1) return true;
+  const holes = round.holes;
+  if (!holes || typeof holes !== 'object') return false;
+  for (const h of Object.values(holes)) {
+    const gross = h?.grossByPlayer;
+    if (!gross || typeof gross !== 'object') continue;
+    for (const v of Object.values(gross)) {
+      if (v != null && String(v).trim() !== '') return true;
+    }
+  }
+  return false;
+}
+
 export async function loadRound(): Promise<PersistedRoundV1 | null> {
   const raw = await AsyncStorage.getItem(KEY);
   if (!raw) return null;

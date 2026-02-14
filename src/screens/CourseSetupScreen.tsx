@@ -32,6 +32,7 @@ import {
   getCourseById,
   clearCourse,
 } from '../storage/courseStorage';
+import { loadRound, hasInProgressRound } from '../storage/roundStorage';
 
 export default function CourseSetupScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -39,11 +40,13 @@ export default function CourseSetupScreen() {
   const [loading, setLoading] = useState(true);
   const [savedCourses, setSavedCourses] = useState<StoredCourse[]>([]);
   const [activeCourseId, setActiveCourseIdState] = useState<string | null>(null);
+  const [roundInProgress, setRoundInProgress] = useState(false);
 
   const refreshData = useCallback(async () => {
-    const [list, activeId] = await Promise.all([listCourses(), getActiveCourseId()]);
+    const [list, activeId, round] = await Promise.all([listCourses(), getActiveCourseId(), loadRound()]);
     setSavedCourses(list);
     setActiveCourseIdState(activeId);
+    setRoundInProgress(hasInProgressRound(round));
     const c = await loadActiveCourse();
     setCourse(c ?? makeDefaultCourse());
   }, []);
@@ -90,6 +93,8 @@ export default function CourseSetupScreen() {
   }, [course]);
 
   const courseValid = isValidCourse(course);
+  const editingActiveCourse = activeCourseId != null && course.id === activeCourseId;
+  const editingLocked = roundInProgress && editingActiveCourse;
 
   const updateHole = (holeNumber: number, patch: Partial<{ par: number; strokeIndex: number }>) => {
     setCourse((prev) => ({
@@ -139,6 +144,21 @@ export default function CourseSetupScreen() {
   };
 
   const onSetActive = async (id: string) => {
+    if (roundInProgress) {
+      Alert.alert(
+        'Round in progress',
+        'Switching course may change net scoring/points for this round. Continue?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Switch anyway', onPress: () => doSetActive(id) },
+        ]
+      );
+    } else {
+      await doSetActive(id);
+    }
+  };
+
+  const doSetActive = async (id: string) => {
     const c = await getCourseById(id);
     if (c) {
       await setActiveCourseId(id);
@@ -153,9 +173,14 @@ export default function CourseSetupScreen() {
   };
 
   const onDelete = async (sc: StoredCourse) => {
+    const isActive = activeCourseId === sc.id;
+    const message =
+      isActive && roundInProgress
+        ? 'This course is active and may be used by the current round. Deleting it may affect scoring.'
+        : 'This course will be removed from your saved list.';
     Alert.alert(
       `Delete "${sc.course.name}"?`,
-      'This course will be removed from your saved list.',
+      message,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -163,7 +188,7 @@ export default function CourseSetupScreen() {
           style: 'destructive',
           onPress: async () => {
             await deleteCourse(sc.id);
-            if (activeCourseId === sc.id) {
+            if (isActive) {
               setCourse(makeDefaultCourse());
             }
             await refreshData();
@@ -222,15 +247,21 @@ export default function CourseSetupScreen() {
             {course.holesNote ? (
               <Text style={styles.defaultedHint}>{course.holesNote} You can edit below.</Text>
             ) : null}
+            {editingLocked ? (
+              <View style={styles.roundInProgressBanner}>
+                <Text style={styles.roundInProgressText}>Round in progress — editing course may affect scoring.</Text>
+              </View>
+            ) : null}
           </View>
 
           <Text style={styles.label}>Course name</Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, editingLocked && styles.inputDisabled]}
             value={course.name}
             onChangeText={(v) => setCourse((p) => ({ ...p, name: v }))}
             placeholder="e.g. Woburn Marquess"
             placeholderTextColor="#999"
+            editable={!editingLocked}
           />
 
           {siDuplicateWarning ? (
@@ -324,19 +355,25 @@ export default function CourseSetupScreen() {
 
                 <View style={styles.scCellPar}>
                   <TextInput
-                    style={styles.scInputPar}
+                    style={[styles.scInputPar, editingLocked && styles.inputDisabled]}
                     keyboardType="number-pad"
                     value={String(h.par)}
                     onChangeText={(v) => updateHole(h.holeNumber, { par: parseInt(v || '0', 10) })}
+                    editable={!editingLocked}
                   />
                 </View>
 
                 <View style={styles.scCellSi}>
                   <TextInput
-                    style={[styles.scInputSi, isSiInvalid(h.holeNumber) && styles.scInputSiInvalid]}
+                    style={[
+                      styles.scInputSi,
+                      isSiInvalid(h.holeNumber) && styles.scInputSiInvalid,
+                      editingLocked && styles.inputDisabled,
+                    ]}
                     keyboardType="number-pad"
                     value={String(h.strokeIndex)}
                     onChangeText={(v) => updateHole(h.holeNumber, { strokeIndex: parseInt(v || '0', 10) })}
+                    editable={!editingLocked}
                   />
                 </View>
               </View>
@@ -345,11 +382,11 @@ export default function CourseSetupScreen() {
 
           <View style={styles.actionsRow}>
             <Pressable
-              style={[styles.primaryBtn, !courseValid && styles.primaryBtnDisabled]}
+              style={[styles.primaryBtn, (!courseValid || editingLocked) && styles.primaryBtnDisabled]}
               onPress={onSave}
-              disabled={!courseValid}
+              disabled={!courseValid || editingLocked}
             >
-              <Text style={[styles.primaryBtnText, !courseValid && styles.primaryBtnTextDisabled]}>Save Course</Text>
+              <Text style={[styles.primaryBtnText, (!courseValid || editingLocked) && styles.primaryBtnTextDisabled]}>Save Course</Text>
             </Pressable>
             <Pressable style={styles.secondaryBtn} onPress={onReset}>
               <Text style={styles.secondaryBtnText}>Reset Defaults</Text>
@@ -487,8 +524,17 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   defaultedHint: { fontSize: 12, color: colors.warning, marginTop: 6, lineHeight: 17 },
+  roundInProgressBanner: {
+    marginTop: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: colors.warningSoft,
+  },
+  roundInProgressText: { fontSize: 12, fontWeight: '800', color: colors.warning, lineHeight: 17 },
 
   label: { fontSize: 12, fontWeight: '900', marginBottom: 6, color: colors.textPrimary },
+  inputDisabled: { backgroundColor: colors.chip, opacity: 0.8 },
   input: { borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 10, fontSize: 16, color: colors.textPrimary },
 
   hint: { marginTop: 8, fontSize: 12, color: colors.textSecondary },
