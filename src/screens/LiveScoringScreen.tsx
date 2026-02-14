@@ -176,6 +176,13 @@ export default function LiveScoringScreen() {
     return sumBestN(valid.map((b) => b.points), Math.min(bestN, valid.length));
   }, [breakdowns, bestN]);
 
+  const holeComplete = useMemo(() => {
+    return players.every((pl) => {
+      const gross = currentHole.grossByPlayer[pl.id];
+      return gross != null && String(gross).trim() !== '';
+    });
+  }, [players, currentHole]);
+
   const roundTotals = useMemo(() => {
     const totals = players.map((pl) => ({
       playerId: pl.id,
@@ -383,7 +390,12 @@ export default function LiveScoringScreen() {
           </View>
 
           <View style={styles.teamBox}>
-            <Text style={styles.teamLabel}>Hole {holeNumber} team points</Text>
+            <View>
+              <Text style={styles.teamLabel}>Hole {holeNumber} team points</Text>
+              {holeComplete ? (
+                <Text style={styles.holeCompleteText}>✓ Hole complete</Text>
+              ) : null}
+            </View>
             <Text style={styles.teamValue}>{teamHolePoints == null ? '—' : `${teamHolePoints}`}</Text>
           </View>
         </View>
@@ -397,6 +409,10 @@ export default function LiveScoringScreen() {
           {players.map((pl, idx) => {
             const b = breakdowns[idx];
             const grossVal = currentHole.grossByPlayer[pl.id] ?? '';
+            const grossNum = parseInt(grossVal, 10);
+            const par = lockedPar ?? 0;
+            const grossVsPar = Number.isFinite(grossNum) && Number.isFinite(par) ? grossNum - par : null;
+            const grossCellStyle = grossVsPar != null ? getGrossVsParStyle(grossVsPar) : undefined;
             return (
               <View key={pl.id} style={styles.playerCard}>
                 <View style={styles.playerHeader}>
@@ -424,6 +440,7 @@ export default function LiveScoringScreen() {
                     }}
                     keyboardType="number-pad"
                     hint="strokes"
+                    inputContainerStyle={grossCellStyle}
                   />
                 </View>
 
@@ -523,6 +540,7 @@ function FieldText(props: {
   onChangeText: (v: string) => void;
   keyboardType?: 'default' | 'number-pad' | 'decimal-pad';
   hint?: string;
+  inputContainerStyle?: { backgroundColor: string };
 }) {
   return (
     <View style={styles.field}>
@@ -531,7 +549,7 @@ function FieldText(props: {
         value={props.value}
         onChangeText={props.onChangeText}
         keyboardType={props.keyboardType ?? 'default'}
-        style={styles.input}
+        style={[styles.input, props.inputContainerStyle]}
         placeholder={props.hint}
         placeholderTextColor="#999"
         autoCorrect={false}
@@ -546,6 +564,13 @@ function getScoreVsParStyle(netVsPar: number): { backgroundColor: string } | und
   if (netVsPar <= -1) return { backgroundColor: colors.successSoft };
   if (netVsPar === 0) return undefined;
   if (netVsPar === 1) return { backgroundColor: colors.warningSoft };
+  return { backgroundColor: colors.dangerSoft };
+}
+
+function getGrossVsParStyle(grossVsPar: number): { backgroundColor: string } {
+  if (grossVsPar <= -1) return { backgroundColor: colors.successSoft };
+  if (grossVsPar === 0) return { backgroundColor: colors.card };
+  if (grossVsPar === 1) return { backgroundColor: colors.warningSoft };
   return { backgroundColor: colors.dangerSoft };
 }
 
@@ -675,6 +700,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   teamLabel: { fontSize: 13, color: '#333', fontWeight: '900' },
+  holeCompleteText: { fontSize: 12, fontWeight: '800', color: colors.success, marginTop: 4 },
   teamValue: { fontSize: 24, fontWeight: '900' },
 
   muted: { color: '#666', fontSize: 12, lineHeight: 17, marginBottom: 10 },
