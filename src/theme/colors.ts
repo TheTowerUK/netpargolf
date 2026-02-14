@@ -8,14 +8,19 @@ export const colors = {
   accent: '#B9975B',         // Subtle gold (club / prestige feel)
 
   // Neutrals
-  background: '#F8F9FA',
+  background: '#F6F7F8',
   card: '#FFFFFF',
-  border: '#D9D9D9',
+  border: '#E2E2E2',
 
   // Text
   textPrimary: '#111111',
   textSecondary: '#555555',
   textInverse: '#FFFFFF',
+
+  // Convenience
+  hero: '#0F5132',
+  heroSoft: '#0B3D26',       // Darker green for subtle depth
+  chip: '#EEF2F5',
 
   // Status
   success: '#198754',
@@ -26,7 +31,7 @@ export const colors = {
   dangerSoft: '#FEE2E2',
 
   // Backward compatibility (CourseSearchScreen)
-  bg: '#F8F9FA',
+  bg: '#F6F7F8',
   text: '#111111',
   textMuted: '#555555',
 };
