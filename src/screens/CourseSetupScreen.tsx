@@ -13,36 +13,57 @@ import {
   TextInput,
   View,
 } from 'react-native';
+
+import type { StoredCourse } from '../storage/courseStorage';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import type { RootStackParamList } from '../navigations/types';
 import { colors } from '../theme/colors';
 import { makeDefaultCourse, isValidCourse, type Course } from '../core/course';
-import { loadActiveCourse, saveCourse, clearCourse } from '../storage/courseStorage';
+import {
+  loadActiveCourse,
+  listCourses,
+  getActiveCourseId,
+  upsertCourse,
+  setActiveCourseId,
+  deleteCourse,
+  toggleFavoriteCourse,
+  getCourseById,
+  clearCourse,
+} from '../storage/courseStorage';
 
 export default function CourseSetupScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [course, setCourse] = useState<Course>(() => makeDefaultCourse());
   const [loading, setLoading] = useState(true);
+  const [savedCourses, setSavedCourses] = useState<StoredCourse[]>([]);
+  const [activeCourseId, setActiveCourseIdState] = useState<string | null>(null);
+
+  const refreshData = useCallback(async () => {
+    const [list, activeId] = await Promise.all([listCourses(), getActiveCourseId()]);
+    setSavedCourses(list);
+    setActiveCourseIdState(activeId);
+    const c = await loadActiveCourse();
+    setCourse(c ?? makeDefaultCourse());
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
       let mounted = true;
       (async () => {
-        const c = await loadActiveCourse();
-        if (mounted) setCourse(c ?? makeDefaultCourse());
+        await refreshData();
         if (mounted) setLoading(false);
       })();
       return () => {
         mounted = false;
       };
-    }, [])
+    }, [refreshData])
   );
 
   const holesLoaded = course.holes?.length === 18;
 
-  const siDuplicateWarning = useMemo(() => {
+  const { isSiInvalid, siDuplicateWarning } = useMemo(() => {
     const seen = new Map<number, number[]>();
     for (const h of course.holes) {
       const list = seen.get(h.strokeIndex) ?? [];
@@ -50,12 +71,25 @@ export default function CourseSetupScreen() {
       seen.set(h.strokeIndex, list);
     }
     const dups = [...seen.entries()].filter(([, holes]) => holes.length > 1);
-    if (!dups.length) return null;
-
-    return dups
-      .map(([si, holes]) => `SI ${si} used on holes ${holes.join(', ')}`)
-      .join(' • ');
+    const invalidHoles = new Set(
+      course.holes.filter((h) => {
+        const n = h.strokeIndex;
+        if (!Number.isFinite(n) || n < 1 || n > 18) return true;
+        const list = seen.get(n) ?? [];
+        return list.length > 1;
+      }).map((h) => h.holeNumber)
+    );
+    const isSiInvalid = (holeNumber: number) => invalidHoles.has(holeNumber);
+    const warning =
+      dups.length > 0
+        ? dups
+            .map(([si, holes]) => `SI ${si} used on holes ${holes.join(', ')}`)
+            .join(' • ')
+        : null;
+    return { isSiInvalid, siDuplicateWarning: warning };
   }, [course]);
+
+  const courseValid = isValidCourse(course);
 
   const updateHole = (holeNumber: number, patch: Partial<{ par: number; strokeIndex: number }>) => {
     setCourse((prev) => ({
@@ -74,7 +108,9 @@ export default function CourseSetupScreen() {
       );
       return;
     }
-    await saveCourse(course);
+    const id = await upsertCourse(course);
+    await setActiveCourseId(id);
+    await refreshData();
     Alert.alert('Saved ✅', 'Course Par/SI saved. Live Scoring will now lock to this course.');
   };
 
@@ -83,9 +119,63 @@ export default function CourseSetupScreen() {
   };
 
   const onClear = async () => {
-    await clearCourse();
-    setCourse(makeDefaultCourse());
-    Alert.alert('Cleared', 'Saved course removed.');
+    Alert.alert(
+      'Clear all courses?',
+      'This will remove all saved courses. You can add new ones from Find course.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All',
+          style: 'destructive',
+          onPress: async () => {
+            await clearCourse();
+            setCourse(makeDefaultCourse());
+            await refreshData();
+            Alert.alert('Cleared', 'All saved courses removed.');
+          },
+        },
+      ]
+    );
+  };
+
+  const onSetActive = async (id: string) => {
+    const c = await getCourseById(id);
+    if (c) {
+      await setActiveCourseId(id);
+      setCourse(c);
+      await refreshData();
+    }
+  };
+
+  const onEdit = async (id: string) => {
+    const c = await getCourseById(id);
+    if (c) setCourse(c);
+  };
+
+  const onDelete = async (sc: StoredCourse) => {
+    Alert.alert(
+      `Delete "${sc.course.name}"?`,
+      'This course will be removed from your saved list.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            await deleteCourse(sc.id);
+            if (activeCourseId === sc.id) {
+              setCourse(makeDefaultCourse());
+            }
+            await refreshData();
+          },
+        },
+      ]
+    );
+  };
+
+  const onToggleFavorite = async (id: string) => {
+    await toggleFavoriteCourse(id);
+    await refreshData();
   };
 
   if (loading) {
@@ -108,7 +198,14 @@ export default function CourseSetupScreen() {
 
         <View style={styles.card}>
           <View style={styles.activeBanner}>
-            <Text style={styles.activeLabel}>Selected course</Text>
+            <View style={styles.activeBannerRow}>
+              <Text style={styles.activeLabel}>Selected course</Text>
+              {courseValid ? (
+                <View style={styles.validBadge}><Text style={styles.validBadgeText}>Valid</Text></View>
+              ) : (
+                <View style={styles.invalidBadge}><Text style={styles.invalidBadgeText}>Fix SI</Text></View>
+              )}
+            </View>
             <Text style={styles.activeName}>{course.name}</Text>
             {holesLoaded ? (
               <Text style={styles.activeHoles}>18 holes loaded ✓</Text>
@@ -153,14 +250,67 @@ export default function CourseSetupScreen() {
         </View>
 
         <View style={styles.card}>
+          <Text style={styles.cardTitle}>Saved courses</Text>
+          {savedCourses.length === 0 ? (
+            <Text style={styles.savedEmpty}>No saved courses yet. Use Find course or save the current one.</Text>
+          ) : (
+            <>
+              {[...savedCourses]
+                .sort((a, b) => (b.isFavorite ? 1 : 0) - (a.isFavorite ? 1 : 0) || a.course.name.localeCompare(b.course.name))
+                .map((sc) => (
+                  <View key={sc.id} style={styles.savedRow}>
+                    <Pressable
+                      onPress={() => onToggleFavorite(sc.id)}
+                      style={styles.starBtn}
+                      hitSlop={8}
+                    >
+                      <Text style={styles.starText}>{sc.isFavorite ? '★' : '☆'}</Text>
+                    </Pressable>
+                    <View style={styles.savedNameWrap}>
+                      <Text style={styles.savedName} numberOfLines={1}>
+                        {sc.course.name}
+                      </Text>
+                      {activeCourseId === sc.id && (
+                        <Text style={styles.activePill}>Active</Text>
+                      )}
+                    </View>
+                    <View style={styles.savedActions}>
+                      {activeCourseId !== sc.id && (
+                        <Pressable
+                          onPress={() => onSetActive(sc.id)}
+                          style={styles.savedActionBtn}
+                        >
+                          <Text style={styles.savedActionText}>Set active</Text>
+                        </Pressable>
+                      )}
+                      <Pressable
+                        onPress={() => onEdit(sc.id)}
+                        style={styles.savedActionBtn}
+                      >
+                        <Text style={styles.savedActionText}>Edit</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => onDelete(sc)}
+                        style={[styles.savedActionBtn, styles.savedActionDanger]}
+                      >
+                        <Text style={styles.savedActionDangerText}>Delete</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ))}
+            </>
+          )}
+        </View>
+
+        <View style={styles.card}>
           <Text style={styles.cardTitle}>Holes</Text>
 
           <View style={styles.scorecardWrap}>
             <View style={[styles.scRow, styles.scHeaderRow]}>
-              <View style={[styles.scCellHole, styles.scHeaderCell]}>
+              <View style={[styles.scCellHole, styles.scHeaderCell, styles.scHeaderDivider]}>
                 <Text style={styles.scHeaderText}>Hole</Text>
               </View>
-              <View style={[styles.scCellPar, styles.scHeaderCellPar]}>
+              <View style={[styles.scCellPar, styles.scHeaderCellPar, styles.scHeaderDivider]}>
                 <Text style={styles.scHeaderText}>Par</Text>
               </View>
               <View style={[styles.scCellSi, styles.scHeaderCellSi]}>
@@ -185,7 +335,7 @@ export default function CourseSetupScreen() {
 
                 <View style={styles.scCellSi}>
                   <TextInput
-                    style={styles.scInputSi}
+                    style={[styles.scInputSi, isSiInvalid(h.holeNumber) && styles.scInputSiInvalid]}
                     keyboardType="number-pad"
                     value={String(h.strokeIndex)}
                     onChangeText={(v) => updateHole(h.holeNumber, { strokeIndex: parseInt(v || '0', 10) })}
@@ -196,8 +346,12 @@ export default function CourseSetupScreen() {
           </View>
 
           <View style={styles.actionsRow}>
-            <Pressable style={styles.primaryBtn} onPress={onSave}>
-              <Text style={styles.primaryBtnText}>Save Course</Text>
+            <Pressable
+              style={[styles.primaryBtn, !courseValid && styles.primaryBtnDisabled]}
+              onPress={onSave}
+              disabled={!courseValid}
+            >
+              <Text style={[styles.primaryBtnText, !courseValid && styles.primaryBtnTextDisabled]}>Save Course</Text>
             </Pressable>
             <Pressable style={styles.secondaryBtn} onPress={onReset}>
               <Text style={styles.secondaryBtnText}>Reset Defaults</Text>
@@ -237,7 +391,7 @@ const styles = StyleSheet.create({
   scRow: { flexDirection: 'row', alignItems: 'stretch' },
   scRowAlt: { backgroundColor: 'rgba(15,81,50,0.04)' },
 
-  scHeaderRow: { borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.35)' },
+  scHeaderRow: { borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.3)' },
 
   scCellHole: {
     width: 64,
@@ -268,6 +422,7 @@ const styles = StyleSheet.create({
   scHeaderCell: { backgroundColor: colors.heroSoft },
   scHeaderCellPar: { backgroundColor: colors.heroSoft },
   scHeaderCellSi: { backgroundColor: colors.heroSoft },
+  scHeaderDivider: { borderRightColor: 'rgba(255,255,255,0.25)' },
 
   scHeaderText: {
     fontWeight: '900',
@@ -296,6 +451,7 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     backgroundColor: '#fff',
   },
+  scInputSiInvalid: { borderColor: colors.danger, backgroundColor: colors.dangerSoft },
 
   activeBanner: {
     marginBottom: 14,
@@ -303,7 +459,12 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
-  activeLabel: { fontSize: 11, color: colors.textSecondary, fontWeight: '800', marginBottom: 2 },
+  activeBannerRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 },
+  activeLabel: { fontSize: 11, color: colors.textSecondary, fontWeight: '800' },
+  validBadge: { backgroundColor: colors.successSoft, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999 },
+  validBadgeText: { fontSize: 11, fontWeight: '600', color: colors.success },
+  invalidBadge: { backgroundColor: colors.dangerSoft, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999 },
+  invalidBadgeText: { fontSize: 11, fontWeight: '600', color: colors.danger },
   activeName: { fontSize: 18, fontWeight: '900', color: colors.textPrimary },
   activeHoles: { fontSize: 12, color: colors.success, fontWeight: '700', marginTop: 4 },
   scorecardUpdated: {
@@ -345,9 +506,31 @@ const styles = StyleSheet.create({
   },
   findCourseBtnText: { color: colors.primary, fontWeight: '900' },
 
+  savedEmpty: { fontSize: 13, color: colors.textSecondary, lineHeight: 18 },
+  savedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    gap: 8,
+  },
+  starBtn: { padding: 4 },
+  starText: { fontSize: 18, color: colors.accent },
+  savedNameWrap: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0 },
+  savedName: { fontSize: 14, fontWeight: '800', color: colors.textPrimary, flex: 1 },
+  activePill: { fontSize: 10, fontWeight: '800', color: colors.success, backgroundColor: colors.successSoft, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 999 },
+  savedActions: { flexDirection: 'row', gap: 6 },
+  savedActionBtn: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, backgroundColor: colors.primarySoft },
+  savedActionText: { fontSize: 12, fontWeight: '800', color: colors.primary },
+  savedActionDanger: { backgroundColor: colors.dangerSoft },
+  savedActionDangerText: { fontSize: 12, fontWeight: '800', color: colors.danger },
+
   actionsRow: { marginTop: 12, gap: 10 },
   primaryBtn: { borderRadius: 14, paddingVertical: 14, alignItems: 'center', backgroundColor: colors.primary },
+  primaryBtnDisabled: { backgroundColor: colors.border, opacity: 0.8 },
   primaryBtnText: { color: colors.textInverse, fontWeight: '900' },
+  primaryBtnTextDisabled: { color: colors.textSecondary },
   secondaryBtn: {
     borderRadius: 14,
     paddingVertical: 14,
