@@ -6,10 +6,10 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 
 import { colors } from '../theme/colors';
-import { listRounds, type StoredRoundSummary } from '../storage/roundHistoryStorage';
+import { listRounds, type StoredRound } from '../storage/roundHistoryStorage';
 
 export default function StatsScreen() {
-  const [rounds, setRounds] = useState<StoredRoundSummary[]>([]);
+  const [rounds, setRounds] = useState<StoredRound[]>([]);
 
   useFocusEffect(
     useCallback(() => {
@@ -34,6 +34,10 @@ export default function StatsScreen() {
       ) : (
         <View style={styles.card}>
           <StatRow label="Total rounds" value={String(stats.totalRounds)} />
+          <StatRow
+            label="Last played"
+            value={stats.lastPlayedDate ?? '—'}
+          />
           <StatRow
             label="Most played course"
             value={stats.mostPlayedCourse ?? '—'}
@@ -61,12 +65,24 @@ function StatRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function computeStats(rounds: StoredRoundSummary[]) {
+function computeStats(rounds: StoredRound[]) {
   const totalRounds = rounds.length;
+
+  const lastTs =
+    rounds.length > 0 ? Math.max(...rounds.map((r) => r.savedAt ?? 0)) : 0;
+
+  const lastPlayedDate =
+    lastTs > 0
+      ? new Date(lastTs).toLocaleDateString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        })
+      : null;
 
   const courseCounts = new Map<string, number>();
   for (const r of rounds) {
-    const name = r.courseNameSnapshot || 'Unknown';
+    const name = r.courseName || 'Unknown';
     courseCounts.set(name, (courseCounts.get(name) ?? 0) + 1);
   }
   const mostPlayedCourse =
@@ -75,7 +91,7 @@ function computeStats(rounds: StoredRoundSummary[]) {
       : null;
 
   const teamTotals = rounds
-    .map((r) => r.teamTotalSnapshot)
+    .map((r) => r.teamTotal)
     .filter((t): t is number => t != null && Number.isFinite(t));
   const bestTeamTotal =
     teamTotals.length > 0 ? Math.max(...teamTotals) : null;
@@ -86,6 +102,7 @@ function computeStats(rounds: StoredRoundSummary[]) {
 
   return {
     totalRounds,
+    lastPlayedDate,
     mostPlayedCourse,
     bestTeamTotal,
     avgTeamTotal,
