@@ -11,6 +11,7 @@ export type StoredCourse = {
   id: string;
   course: Course;
   isFavorite: boolean;
+  updatedAt?: number; // set in migration + upsert; optional for legacy entries
 };
 
 async function ensureMigrated(): Promise<void> {
@@ -22,7 +23,8 @@ async function ensureMigrated(): Promise<void> {
     try {
       const course = JSON.parse(legacy) as Course;
       const id = course.id && course.id !== 'default-course' ? course.id : `course-${Date.now()}`;
-      const stored: StoredCourse[] = [{ id, course: { ...course, id }, isFavorite: false }];
+      const now = Date.now();
+      const stored: StoredCourse[] = [{ id, course: { ...course, id }, isFavorite: false, updatedAt: now }];
       await AsyncStorage.setItem(COURSES_KEY, JSON.stringify(stored));
       await AsyncStorage.setItem(ACTIVE_ID_KEY, id);
     } catch {
@@ -39,7 +41,11 @@ export async function listCourses(): Promise<StoredCourse[]> {
   if (!raw) return [];
   try {
     const arr = JSON.parse(raw) as StoredCourse[];
-    return Array.isArray(arr) ? arr : [];
+    const list = Array.isArray(arr) ? arr : [];
+    return [...list].sort((a, b) => {
+      if (a.isFavorite !== b.isFavorite) return a.isFavorite ? -1 : 1;
+      return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+    });
   } catch {
     return [];
   }
@@ -50,10 +56,12 @@ export async function upsertCourse(course: Course): Promise<string> {
   const id = course.id && course.id !== 'default-course' ? course.id : `course-${Date.now()}`;
   const courses = await listCourses();
   const idx = courses.findIndex((c) => c.id === id);
+  const now = Date.now();
   const entry: StoredCourse = {
     id,
     course: { ...course, id },
     isFavorite: idx >= 0 ? courses[idx].isFavorite : false,
+    updatedAt: now,
   };
   if (idx >= 0) {
     courses[idx] = entry;

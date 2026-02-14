@@ -255,9 +255,7 @@ export default function CourseSetupScreen() {
             <Text style={styles.savedEmpty}>No saved courses yet. Use Find course or save the current one.</Text>
           ) : (
             <>
-              {[...savedCourses]
-                .sort((a, b) => (b.isFavorite ? 1 : 0) - (a.isFavorite ? 1 : 0) || a.course.name.localeCompare(b.course.name))
-                .map((sc) => (
+              {savedCourses.map((sc) => (
                   <View key={sc.id} style={styles.savedRow}>
                     <Pressable
                       onPress={() => onToggleFavorite(sc.id)}
