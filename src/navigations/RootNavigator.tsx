@@ -13,6 +13,8 @@ import CourseSearchScreen from '../screens/CourseSearchScreen';
 import LiveScoringScreen from '../screens/LiveScoringScreen';
 import ScoreboardScreen from '../screens/ScoreboardScreen';
 import ScorecardScreen from '../screens/ScorecardScreen';
+import RoundHistoryScreen from '../screens/RoundHistoryScreen';
+import RoundDetailScreen from '../screens/RoundDetailScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -27,6 +29,8 @@ export default function RootNavigator() {
         <Stack.Screen name="HelpPractice" component={HelpPracticeScreen} options={{ title: 'Help / Practice' }} />
         <Stack.Screen name="CourseSetup" component={CourseSetupScreen} options={{ title: 'Course Setup' }} />
         <Stack.Screen name="CourseSearch" component={CourseSearchScreen} options={{ title: 'Find a course' }} />
+        <Stack.Screen name="RoundHistory" component={RoundHistoryScreen} options={{ title: 'Round History' }} />
+        <Stack.Screen name="RoundDetail" component={RoundDetailScreen} options={{ title: 'Round' }} />
       </Stack.Navigator>
     </NavigationContainer>
   );

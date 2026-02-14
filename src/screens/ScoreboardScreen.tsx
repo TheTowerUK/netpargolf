@@ -9,7 +9,8 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import type { RootStackParamList } from '../navigations/types';
 import { loadRound, clearRound, type PersistedRoundV1 } from '../storage/roundStorage';
-import { loadCourse } from '../storage/courseStorage';
+import { loadCourse, getActiveCourseId } from '../storage/courseStorage';
+import { saveRoundToHistory } from '../storage/roundHistoryStorage';
 import type { Course } from '../core/course';
 import { scoreHoleOptionA, sumBestN } from '../core/scoring';
 import { colors } from '../theme/colors';
@@ -102,10 +103,32 @@ export default function ScoreboardScreen() {
     navigation.navigate('LiveScoring');
   };
 
-  const onClear = async () => {
+  const onArchive = async () => {
+    if (!round || !course) return;
+    const courseId = await getActiveCourseId();
+    await saveRoundToHistory(round, courseId, course.name, summary?.teamTotal);
     await clearRound();
-    Alert.alert('Cleared', 'Saved round removed.');
+    Alert.alert('Archived ✅', 'Round saved to history.');
     await refresh();
+  };
+
+  const onClear = async () => {
+    Alert.alert(
+      'Clear round?',
+      'This will remove the saved round. Archive it first to keep it in Round History.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            await clearRound();
+            Alert.alert('Cleared', 'Saved round removed.');
+            await refresh();
+          },
+        },
+      ]
+    );
   };
 
   return (
@@ -169,6 +192,12 @@ export default function ScoreboardScreen() {
 
             <View style={{ height: 10 }} />
 
+            <Pressable style={styles.archiveBtn} onPress={onArchive}>
+              <Text style={styles.archiveBtnText}>Archive to history</Text>
+            </Pressable>
+
+            <View style={{ height: 8 }} />
+
             <Pressable style={styles.dangerBtn} onPress={onClear}>
               <Text style={styles.dangerBtnText}>Clear saved round</Text>
             </Pressable>
@@ -226,6 +255,9 @@ const styles = StyleSheet.create({
 
   teamTotal: { marginTop: 10, fontSize: 16, fontWeight: '900', textAlign: 'right' },
   teamTotalValue: { fontSize: 20 },
+
+  archiveBtn: { backgroundColor: colors.primary, borderRadius: 14, paddingVertical: 12, alignItems: 'center' },
+  archiveBtnText: { color: colors.textInverse, fontWeight: '900' },
 
   dangerBtn: { backgroundColor: colors.danger, borderRadius: 14, paddingVertical: 12, alignItems: 'center' },
   dangerBtnText: { color: colors.textInverse, fontWeight: '900' },

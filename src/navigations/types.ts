@@ -9,4 +9,6 @@ export type RootStackParamList = {
   LiveScoring: undefined;
   Scoreboard: undefined;
   Scorecard: undefined;
+  RoundHistory: undefined;
+  RoundDetail: { roundId: string };
 };
