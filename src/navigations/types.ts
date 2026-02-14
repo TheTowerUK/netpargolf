@@ -11,4 +11,5 @@ export type RootStackParamList = {
   Scorecard: undefined;
   RoundHistory: undefined;
   RoundDetail: { roundId: string };
+  Stats: undefined;
 };

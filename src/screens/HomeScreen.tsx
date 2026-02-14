@@ -74,6 +74,13 @@ export default function HomeScreen({ navigation }: Props) {
 
         <View style={{ height: 10 }} />
 
+        <Pressable style={styles.secondaryBtn} onPress={() => navigation.navigate('Stats')}>
+          <Text style={styles.secondaryBtnText}>Stats</Text>
+          <Text style={styles.chev}>›</Text>
+        </Pressable>
+
+        <View style={{ height: 10 }} />
+
         <Pressable style={styles.secondaryBtn} onPress={() => navigation.navigate('HelpPractice')}>
           <Text style={styles.secondaryBtnText}>Help / Practice</Text>
           <Text style={styles.chev}>›</Text>
