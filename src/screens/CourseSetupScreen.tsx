@@ -17,6 +17,7 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import type { RootStackParamList } from '../navigations/types';
+import { colors } from '../theme/colors';
 import { makeDefaultCourse, isValidCourse, type Course } from '../core/course';
 import { loadActiveCourse, saveCourse, clearCourse } from '../storage/courseStorage';
 
@@ -98,7 +99,7 @@ export default function CourseSetupScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: '#fff' }}
+      style={{ flex: 1, backgroundColor: colors.background }}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView contentContainerStyle={styles.container}>
@@ -212,20 +213,20 @@ export default function CourseSetupScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 16, paddingBottom: 28, backgroundColor: '#fff' },
-  title: { fontSize: 26, fontWeight: '900', marginBottom: 6 },
-  subTitle: { fontSize: 13, color: '#444', lineHeight: 18, marginBottom: 12 },
-  muted: { fontSize: 13, color: '#666' },
+  container: { padding: 16, paddingBottom: 28, backgroundColor: colors.background },
+  title: { fontSize: 26, fontWeight: '900', marginBottom: 6, color: colors.primary },
+  subTitle: { fontSize: 13, color: colors.textSecondary, lineHeight: 18, marginBottom: 12 },
+  muted: { fontSize: 13, color: colors.textSecondary },
 
   card: {
     borderWidth: 1,
-    borderColor: '#e7e7e7',
+    borderColor: colors.border,
     borderRadius: 14,
     padding: 14,
     marginBottom: 12,
-    backgroundColor: '#fff',
+    backgroundColor: colors.card,
   },
-  cardTitle: { fontSize: 16, fontWeight: '900', marginBottom: 10 },
+  cardTitle: { fontSize: 16, fontWeight: '900', marginBottom: 10, color: colors.textPrimary },
 
   scorecardWrap: {
     borderWidth: 1,
@@ -234,9 +235,9 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   scRow: { flexDirection: 'row', alignItems: 'stretch' },
-  scRowAlt: { backgroundColor: '#fafafa' },
+  scRowAlt: { backgroundColor: 'rgba(15,81,50,0.04)' },
 
-  scHeaderRow: { borderBottomWidth: 1, borderBottomColor: '#111' },
+  scHeaderRow: { borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.35)' },
 
   scCellHole: {
     width: 64,
@@ -264,11 +265,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
 
-  scHeaderCell: { backgroundColor: '#f2f2f2' },
-  scHeaderCellPar: { backgroundColor: '#f2f2f2' },
-  scHeaderCellSi: { backgroundColor: '#f2f2f2' },
+  scHeaderCell: { backgroundColor: colors.heroSoft },
+  scHeaderCellPar: { backgroundColor: colors.heroSoft },
+  scHeaderCellSi: { backgroundColor: colors.heroSoft },
 
-  scHeaderText: { fontWeight: '900', fontSize: 14, color: '#111' },
+  scHeaderText: {
+    fontWeight: '900',
+    fontSize: 14,
+    color: colors.textInverse,
+  },
   scHoleText: { fontWeight: '900', fontSize: 16, color: '#111' },
 
   scInputPar: {
@@ -296,18 +301,18 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     paddingBottom: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: colors.border,
   },
-  activeLabel: { fontSize: 11, color: '#666', fontWeight: '800', marginBottom: 2 },
-  activeName: { fontSize: 18, fontWeight: '900', color: '#111' },
-  activeHoles: { fontSize: 12, color: '#0a7ea4', fontWeight: '700', marginTop: 4 },
+  activeLabel: { fontSize: 11, color: colors.textSecondary, fontWeight: '800', marginBottom: 2 },
+  activeName: { fontSize: 18, fontWeight: '900', color: colors.textPrimary },
+  activeHoles: { fontSize: 12, color: colors.success, fontWeight: '700', marginTop: 4 },
   scorecardUpdated: {
     marginTop: 8,
     paddingVertical: 8,
     paddingHorizontal: 10,
     borderRadius: 12,
-    backgroundColor: '#dbeafe',
-    color: '#1d4ed8',
+    backgroundColor: colors.primarySoft,
+    color: colors.primary,
     fontWeight: '900',
     fontSize: 12,
   },
@@ -316,27 +321,42 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 10,
     borderRadius: 12,
-    backgroundColor: '#ffedd5',
-    color: '#b45309',
+    backgroundColor: colors.warningSoft,
+    color: colors.warning,
     fontWeight: '900',
     fontSize: 12,
     lineHeight: 16,
   },
-  defaultedHint: { fontSize: 12, color: '#b45309', marginTop: 6, lineHeight: 17 },
+  defaultedHint: { fontSize: 12, color: colors.warning, marginTop: 6, lineHeight: 17 },
 
-  label: { fontSize: 12, fontWeight: '900', marginBottom: 6 },
-  input: { borderWidth: 1, borderColor: '#ddd', borderRadius: 12, padding: 10, fontSize: 16 },
+  label: { fontSize: 12, fontWeight: '900', marginBottom: 6, color: colors.textPrimary },
+  input: { borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 10, fontSize: 16, color: colors.textPrimary },
 
-  hint: { marginTop: 8, fontSize: 12, color: '#666' },
-  warning: { marginTop: 8, fontSize: 12, color: '#b45309', fontWeight: '900' },
-  findCourseBtn: { marginTop: 12, borderRadius: 14, paddingVertical: 14, alignItems: 'center', backgroundColor: '#f3f3f3' },
-  findCourseBtnText: { color: '#111', fontWeight: '900' },
+  hint: { marginTop: 8, fontSize: 12, color: colors.textSecondary },
+  warning: { marginTop: 8, fontSize: 12, color: colors.warning, fontWeight: '900' },
+  findCourseBtn: {
+    marginTop: 12,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.accent,
+  },
+  findCourseBtnText: { color: colors.primary, fontWeight: '900' },
 
   actionsRow: { marginTop: 12, gap: 10 },
-  primaryBtn: { borderRadius: 14, paddingVertical: 14, alignItems: 'center', backgroundColor: '#111' },
-  primaryBtnText: { color: '#fff', fontWeight: '900' },
-  secondaryBtn: { borderRadius: 14, paddingVertical: 14, alignItems: 'center', backgroundColor: '#f3f3f3' },
-  secondaryBtnText: { color: '#111', fontWeight: '900' },
-  dangerBtn: { borderRadius: 14, paddingVertical: 14, alignItems: 'center', backgroundColor: '#7f1d1d' },
-  dangerBtnText: { color: '#fff', fontWeight: '900' },
+  primaryBtn: { borderRadius: 14, paddingVertical: 14, alignItems: 'center', backgroundColor: colors.primary },
+  primaryBtnText: { color: colors.textInverse, fontWeight: '900' },
+  secondaryBtn: {
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  secondaryBtnText: { color: colors.textPrimary, fontWeight: '900' },
+  dangerBtn: { borderRadius: 14, paddingVertical: 14, alignItems: 'center', backgroundColor: colors.danger },
+  dangerBtnText: { color: colors.textInverse, fontWeight: '900' },
 });
