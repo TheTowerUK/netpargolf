@@ -8,7 +8,7 @@ export type PersistedPlayer = {
   id: string;
   name: string;
   courseHandicap: string;     // keep as string to avoid input churn
-  allowancePercent: string;   // keep as string (%)
+  allowancePercent?: string;  // deprecated: now at round level
 };
 
 export type PersistedHoleState = {
@@ -21,6 +21,15 @@ export type PersistedRoundV1 = {
   holeNumber: number; // 1..18
   bestN: 2 | 3 | 4;
   roundingMode: 'nearest' | 'floor' | 'ceil';
+  allowancePercent: string; // round-level (%), e.g. "95"
+
+  meta?: {
+    competitionName?: string;
+    competitionDate?: string; // YYYY-MM-DD
+    tee?: 'White' | 'Yellow' | 'Red' | 'Blue';
+    marker?: string;
+  };
+
   players: PersistedPlayer[]; // 4 players
   holes: Record<number, PersistedHoleState>; // 1..18
 };

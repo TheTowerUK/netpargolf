@@ -1,22 +1,24 @@
 // src/screens/ScoreboardScreen.tsx
 // NetParGolf — Scoreboard (reads persisted round + course) and shows totals.
 // Also offers "Continue round" and "Clear saved round".
+// Supports viewing historical rounds via roundId param.
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import type { RootStackParamList } from '../navigations/types';
 import { loadRound, clearRound, type PersistedRoundV1 } from '../storage/roundStorage';
 import { loadCourse, getActiveCourseId } from '../storage/courseStorage';
-import { saveRoundToHistory } from '../storage/roundHistoryStorage';
+import { getRoundById, saveRoundToHistory } from '../storage/roundHistoryStorage';
 import type { Course } from '../core/course';
-import { scoreHoleOptionA, sumBestN } from '../core/scoring';
+import { computePlayingHandicap, scoreHoleOptionA, sumBestN } from '../core/scoring';
 import { colors } from '../theme/colors';
 
-export default function ScoreboardScreen() {
-  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+type Props = NativeStackScreenProps<RootStackParamList, 'Scoreboard'>;
+
+export default function ScoreboardScreen({ navigation, route }: Props) {
+  const viewingHistory = !!route.params?.roundId;
 
   const [round, setRound] = useState<PersistedRoundV1 | null>(null);
   const [course, setCourse] = useState<Course | null>(null);
@@ -25,7 +27,9 @@ export default function ScoreboardScreen() {
   const refresh = async () => {
     setLoading(true);
     try {
-      const [r, c] = await Promise.all([loadRound(), loadCourse()]);
+      const roundId = route.params?.roundId;
+      const rPromise = roundId ? getRoundById(roundId) : loadRound();
+      const [r, c] = await Promise.all([rPromise, loadCourse()]);
       setRound(r);
       setCourse(c);
     } finally {
@@ -35,7 +39,7 @@ export default function ScoreboardScreen() {
 
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [route.params?.roundId]);
 
   const summary = useMemo(() => {
     if (!round) return null;
@@ -58,7 +62,6 @@ export default function ScoreboardScreen() {
       const par = course?.holes?.[h - 1]?.par;
       const si = course?.holes?.[h - 1]?.strokeIndex;
 
-      // If course not available, we cannot correctly score (Par/SI locked design).
       if (!Number.isFinite(par) || !Number.isFinite(si)) continue;
 
       const holePoints: number[] = [];
@@ -67,14 +70,16 @@ export default function ScoreboardScreen() {
         const grossStr = holeState.grossByPlayer[p.id];
         const gross = parseInt(grossStr ?? '', 10);
         const ch = parseInt(p.courseHandicap ?? '', 10);
-        const pct = parseFloat(p.allowancePercent ?? '');
+        const pct = parseFloat(round.allowancePercent ?? p.allowancePercent ?? '100');
 
         if (!Number.isFinite(gross) || !Number.isFinite(ch) || !Number.isFinite(pct)) return;
 
+        const playingHcp = computePlayingHandicap(ch, pct, round.roundingMode ?? 'nearest');
+
         try {
           const b = scoreHoleOptionA({
-            courseHandicap: ch,
-            allowancePercent: pct / 100,
+            courseHandicap: playingHcp,
+            allowancePercent: 1,
             roundingMode: round.roundingMode,
             hole: { par: par as number, strokeIndex: si as number },
             gross,
@@ -104,9 +109,12 @@ export default function ScoreboardScreen() {
   };
 
   const onArchive = async () => {
-    if (!round || !course) return;
+    if (!round) return;
+
     const courseId = await getActiveCourseId();
-    await saveRoundToHistory(round, courseId, course.name, summary?.teamTotal);
+    const courseName = course?.name ?? 'No course selected';
+    await saveRoundToHistory(round, courseId, courseName, summary?.teamTotal ?? null);
+
     await clearRound();
     Alert.alert('Archived ✅', 'Round saved to history.');
     await refresh();
@@ -153,14 +161,20 @@ export default function ScoreboardScreen() {
             <Row label="Team rule" value={round.bestN === 4 ? 'All 4' : `Best ${round.bestN}`} />
             <Row label="Rounding" value={round.roundingMode} />
             <Row label="Last saved" value={new Date(round.savedAt).toLocaleString()} />
-            <View style={styles.actionsRow}>
-              <Pressable style={styles.primaryBtn} onPress={onContinue}>
-                <Text style={styles.primaryBtnText}>Continue round</Text>
+            {!viewingHistory ? (
+              <View style={styles.actionsRow}>
+                <Pressable style={styles.primaryBtn} onPress={onContinue}>
+                  <Text style={styles.primaryBtnText}>Continue round</Text>
+                </Pressable>
+                <Pressable style={styles.secondaryBtn} onPress={refresh}>
+                  <Text style={styles.secondaryBtnText}>Refresh</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <Pressable style={styles.secondaryBtn} onPress={() => navigation.navigate('RoundHistory')}>
+                <Text style={styles.secondaryBtnText}>Back to history</Text>
               </Pressable>
-              <Pressable style={styles.secondaryBtn} onPress={refresh}>
-                <Text style={styles.secondaryBtnText}>Refresh</Text>
-              </Pressable>
-            </View>
+            )}
           </View>
 
           <View style={styles.card}>
@@ -190,17 +204,21 @@ export default function ScoreboardScreen() {
               <Text style={styles.muted}>No totals yet.</Text>
             )}
 
-            <View style={{ height: 10 }} />
+            {!viewingHistory ? (
+              <>
+                <View style={{ height: 10 }} />
 
-            <Pressable style={styles.archiveBtn} onPress={onArchive}>
-              <Text style={styles.archiveBtnText}>Archive to history</Text>
-            </Pressable>
+                <Pressable style={styles.archiveBtn} onPress={onArchive}>
+                  <Text style={styles.archiveBtnText}>Archive to history</Text>
+                </Pressable>
 
-            <View style={{ height: 8 }} />
+                <View style={{ height: 8 }} />
 
-            <Pressable style={styles.dangerBtn} onPress={onClear}>
-              <Text style={styles.dangerBtnText}>Clear saved round</Text>
-            </Pressable>
+                <Pressable style={styles.dangerBtn} onPress={onClear}>
+                  <Text style={styles.dangerBtnText}>Clear saved round</Text>
+                </Pressable>
+              </>
+            ) : null}
           </View>
         </>
       ) : null}

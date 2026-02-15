@@ -22,12 +22,24 @@ import {
   type ScoringBreakdown,
 } from '../core/scoring';
 
+function computePlayingHandicap(
+  courseHandicap: number,
+  allowancePercent: number,
+  roundingMode: RoundingMode
+): number {
+  const raw = courseHandicap * (allowancePercent / 100);
+  if (roundingMode === 'floor') return Math.floor(raw);
+  if (roundingMode === 'ceil') return Math.ceil(raw);
+  return Math.round(raw);
+}
+
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigations/types';
 
-import { loadCourse } from '../storage/courseStorage';
+import { loadCourse, getActiveCourseId } from '../storage/courseStorage';
 import { loadRound, saveRound, clearRound, type PersistedRoundV1 } from '../storage/roundStorage';
+import { saveRoundToHistory } from '../storage/roundHistoryStorage';
 import { useAutosaveRound } from '../hooks/useAutosaveRound';
 import type { Course } from '../core/course';
 import { colors } from '../theme/colors';
@@ -36,7 +48,6 @@ type PlayerUI = {
   id: string;
   name: string;
   courseHandicap: string;
-  allowancePercent: string;
 };
 
 type HoleState = {
@@ -46,10 +57,10 @@ type HoleState = {
 const HOLES = Array.from({ length: 18 }, (_, i) => i + 1);
 
 const DEFAULT_PLAYERS: PlayerUI[] = [
-  { id: 'p1', name: 'Player 1', courseHandicap: '18', allowancePercent: '100' },
-  { id: 'p2', name: 'Player 2', courseHandicap: '14', allowancePercent: '100' },
-  { id: 'p3', name: 'Player 3', courseHandicap: '10', allowancePercent: '100' },
-  { id: 'p4', name: 'Player 4', courseHandicap: '22', allowancePercent: '100' },
+  { id: 'p1', name: 'Player 1', courseHandicap: '18' },
+  { id: 'p2', name: 'Player 2', courseHandicap: '14' },
+  { id: 'p3', name: 'Player 3', courseHandicap: '10' },
+  { id: 'p4', name: 'Player 4', courseHandicap: '22' },
 ];
 
 export default function LiveScoringScreen() {
@@ -59,6 +70,14 @@ export default function LiveScoringScreen() {
   const [holeNumber, setHoleNumber] = useState<number>(1);
   const [bestN, setBestN] = useState<2 | 3 | 4>(2);
   const [roundingMode, setRoundingMode] = useState<RoundingMode>('nearest');
+  const [allowancePercent, setAllowancePercent] = useState<string>('100');
+  const [competitionName, setCompetitionName] = useState('Club Stableford');
+  const [competitionDate, setCompetitionDate] = useState(() => {
+    const d = new Date();
+    return d.toISOString().slice(0, 10); // YYYY-MM-DD
+  });
+  const [tee, setTee] = useState<'White' | 'Yellow' | 'Red' | 'Blue'>('White');
+  const [marker, setMarker] = useState('');
 
   const [course, setCourse] = useState<Course | null>(null);
   const [courseLoading, setCourseLoading] = useState(true);
@@ -88,7 +107,15 @@ export default function LiveScoringScreen() {
       try {
         const saved = await loadRound();
         if (saved) {
-          setPlayers(saved.players);
+          setPlayers(
+            saved.players.map(({ id, name, courseHandicap }) => ({ id, name, courseHandicap }))
+          );
+          setAllowancePercent(saved.allowancePercent ?? '100');
+          const m = saved.meta;
+          if (m?.competitionName) setCompetitionName(m.competitionName);
+          if (m?.competitionDate) setCompetitionDate(m.competitionDate);
+          if (m?.tee) setTee(m.tee);
+          if (m?.marker) setMarker(m.marker);
           const mergedHoles: Record<number, HoleState> = {};
           HOLES.forEach((h) => {
             mergedHoles[h] = saved.holes[h] ?? { grossByPlayer: {} };
@@ -111,6 +138,8 @@ export default function LiveScoringScreen() {
       holeNumber,
       bestN,
       roundingMode,
+      allowancePercent,
+      meta: { competitionName, competitionDate, tee, marker },
       players,
       holes,
     };
@@ -118,7 +147,7 @@ export default function LiveScoringScreen() {
   };
 
   useAutosaveRound(
-    { holeNumber, bestN, roundingMode, players, holes },
+    { holeNumber, bestN, roundingMode, allowancePercent, competitionName, competitionDate, tee, marker, players, holes },
     persistNow,
     450
   );
@@ -143,7 +172,7 @@ export default function LiveScoringScreen() {
     return players.map((pl) => {
       const grossStr = currentHole.grossByPlayer[pl.id];
       const ch = parseInt(pl.courseHandicap, 10);
-      const pct = parseFloat(pl.allowancePercent);
+      const pct = parseFloat(allowancePercent);
       const gross = parseInt(grossStr ?? '', 10);
 
       if (
@@ -156,10 +185,12 @@ export default function LiveScoringScreen() {
         return null;
       }
 
+      const playingHcp = computePlayingHandicap(ch, pct, roundingMode);
+
       try {
         return scoreHoleOptionA({
-          courseHandicap: ch,
-          allowancePercent: pct / 100,
+          courseHandicap: playingHcp,
+          allowancePercent: 1,
           roundingMode,
           hole: { par: parsedHole.par, strokeIndex: parsedHole.si },
           gross,
@@ -168,7 +199,7 @@ export default function LiveScoringScreen() {
         return null;
       }
     });
-  }, [players, currentHole, parsedHole, roundingMode]);
+  }, [players, currentHole, parsedHole, roundingMode, allowancePercent]);
 
   const teamHolePoints = useMemo(() => {
     const valid = breakdowns.filter((b): b is ScoringBreakdown => !!b);
@@ -210,14 +241,16 @@ export default function LiveScoringScreen() {
         const grossStr = holeState.grossByPlayer[pl.id];
         const gross = parseInt(grossStr ?? '', 10);
         const ch = parseInt(pl.courseHandicap, 10);
-        const pct = parseFloat(pl.allowancePercent);
+        const pct = parseFloat(allowancePercent);
 
         if (!Number.isFinite(gross) || !Number.isFinite(ch) || !Number.isFinite(pct)) return;
 
+        const playingHcp = computePlayingHandicap(ch, pct, roundingMode);
+
         try {
           const b = scoreHoleOptionA({
-            courseHandicap: ch,
-            allowancePercent: pct / 100,
+            courseHandicap: playingHcp,
+            allowancePercent: 1,
             roundingMode,
             hole: { par, strokeIndex: si },
             gross,
@@ -242,7 +275,7 @@ export default function LiveScoringScreen() {
     });
 
     return { players: totals, teamTotal };
-  }, [holes, players, bestN, roundingMode, course]);
+  }, [holes, players, bestN, roundingMode, allowancePercent, course]);
 
   const updateGross = (playerId: string, value: string) => {
     setHoles((prev) => ({
@@ -264,13 +297,38 @@ export default function LiveScoringScreen() {
   };
 
   const resetRound = async () => {
-    await clearRound();
-    setHoles(() => {
-      const reset: Record<number, HoleState> = {};
-      HOLES.forEach((h) => (reset[h] = { grossByPlayer: {} }));
-      return reset;
-    });
-    setHoleNumber(1);
+    Alert.alert(
+      'Reset round?',
+      'This will clear the in-progress round and all scores. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: async () => {
+            await clearRound();
+
+            setPlayers(DEFAULT_PLAYERS);
+            setBestN(2);
+            setRoundingMode('nearest');
+            setAllowancePercent('100');
+            setCompetitionName('Club Stableford');
+            setCompetitionDate(new Date().toISOString().slice(0, 10));
+            setTee('White');
+            setMarker('');
+
+            setHoles(() => {
+              const reset: Record<number, HoleState> = {};
+              HOLES.forEach((h) => (reset[h] = { grossByPlayer: {} }));
+              return reset;
+            });
+
+            setHoleNumber(1);
+            Alert.alert('Reset', 'Round cleared.');
+          },
+        },
+      ]
+    );
   };
 
   const refreshCourse = async () => {
@@ -283,6 +341,50 @@ export default function LiveScoringScreen() {
     }
   };
 
+  const onArchive = async () => {
+    Alert.alert(
+      'Archive round?',
+      'This will save the round to Round History and clear the in-progress round.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Archive',
+          style: 'default',
+          onPress: async () => {
+            const payload: PersistedRoundV1 = {
+              version: 1,
+              savedAt: Date.now(),
+              holeNumber,
+              bestN,
+              roundingMode,
+              allowancePercent,
+              meta: { competitionName, competitionDate, tee, marker },
+              players,
+              holes,
+            };
+
+            const courseId = await getActiveCourseId();
+            const courseName = course?.name ?? 'No course selected';
+            const teamTotal = roundTotals?.teamTotal ?? null;
+
+            await saveRoundToHistory(payload, courseId, courseName, teamTotal);
+            await clearRound();
+
+            setHoles(() => {
+              const reset: Record<number, HoleState> = {};
+              HOLES.forEach((h) => (reset[h] = { grossByPlayer: {} }));
+              return reset;
+            });
+            setHoleNumber(1);
+
+            Alert.alert('Round saved', 'Saved to Round History.');
+            navigation.navigate('RoundHistory');
+          },
+        },
+      ]
+    );
+  };
+
   const ensureCourse = () => {
     if (!course) {
       Alert.alert(
@@ -293,6 +395,16 @@ export default function LiveScoringScreen() {
   };
 
   const courseReady = !!course && Array.isArray(course.holes) && course.holes.length === 18;
+
+  const hasAnyGross = useMemo(() => {
+    return HOLES.some((h) => {
+      const state = holes[h];
+      if (!state?.grossByPlayer) return false;
+      return Object.values(state.grossByPlayer).some(
+        (v) => v != null && String(v).trim() !== ''
+      );
+    });
+  }, [holes]);
 
   return (
     <KeyboardAvoidingView
@@ -329,6 +441,60 @@ export default function LiveScoringScreen() {
           <Text style={styles.courseHint}>
             Par/SI are locked per hole from Course Setup.
           </Text>
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Competition</Text>
+
+          <View style={styles.row}>
+            <View style={styles.field}>
+              <Text style={styles.label}>Name</Text>
+              <TextInput
+                value={competitionName}
+                onChangeText={setCompetitionName}
+                style={styles.input}
+                placeholder="Club Stableford"
+                placeholderTextColor="#999"
+              />
+            </View>
+          </View>
+
+          <View style={styles.row}>
+            <View style={styles.field}>
+              <Text style={styles.label}>Date (YYYY-MM-DD)</Text>
+              <TextInput
+                value={competitionDate}
+                onChangeText={setCompetitionDate}
+                style={styles.input}
+                placeholder="2026-02-15"
+                placeholderTextColor="#999"
+                autoCapitalize="none"
+              />
+            </View>
+
+            <View style={styles.field}>
+              <Text style={styles.label}>Tee</Text>
+              <View style={styles.pills}>
+                <Pill text="White" active={tee === 'White'} onPress={() => setTee('White')} />
+                <Pill text="Yellow" active={tee === 'Yellow'} onPress={() => setTee('Yellow')} />
+                <Pill text="Red" active={tee === 'Red'} onPress={() => setTee('Red')} />
+                <Pill text="Blue" active={tee === 'Blue'} onPress={() => setTee('Blue')} />
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.row}>
+            <View style={styles.field}>
+              <Text style={styles.label}>Marker</Text>
+              <TextInput
+                value={marker}
+                onChangeText={setMarker}
+                style={styles.input}
+                placeholder="Marker name"
+                placeholderTextColor="#999"
+              />
+            </View>
+          </View>
         </View>
 
         {!courseReady ? (
@@ -389,6 +555,21 @@ export default function LiveScoringScreen() {
             </View>
           </View>
 
+          <View style={styles.field}>
+            <Text style={styles.label}>Handicap Allowance %</Text>
+            <TextInput
+              value={allowancePercent}
+              onChangeText={setAllowancePercent}
+              keyboardType="decimal-pad"
+              style={styles.input}
+              placeholder="100"
+              placeholderTextColor="#999"
+            />
+            <Text style={styles.hint}>
+              Applied to all players for this round.
+            </Text>
+          </View>
+
           <View style={styles.teamBox}>
             <View>
               <Text style={styles.teamLabel}>Hole {holeNumber} team points</Text>
@@ -403,7 +584,7 @@ export default function LiveScoringScreen() {
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Players</Text>
           <Text style={styles.muted}>
-            Tip: keep Course Hcp + Allowance % constant; just enter Gross for each hole.
+            Tip: keep Course Hcp constant; just enter Gross for each hole.
           </Text>
 
           {players.map((pl, idx) => {
@@ -452,16 +633,21 @@ export default function LiveScoringScreen() {
                     keyboardType="number-pad"
                     hint="e.g. 18"
                   />
-                  <FieldText
-                    label="Allowance %"
-                    value={pl.allowancePercent}
-                    onChangeText={(v) => setPlayers((prev) => prev.map((p) => (p.id === pl.id ? { ...p, allowancePercent: v } : p)))}
-                    keyboardType="decimal-pad"
-                    hint="90/95/100"
-                  />
                 </View>
 
                 <View style={styles.breakRow}>
+                  <BreakItem
+                    label="Playing Hcp"
+                    value={
+                      Number.isFinite(parseInt(pl.courseHandicap, 10))
+                        ? computePlayingHandicap(
+                            parseInt(pl.courseHandicap, 10),
+                            parseFloat(allowancePercent),
+                            roundingMode
+                          ).toString()
+                        : '—'
+                    }
+                  />
                   <BreakItem label="Adj Hcp" value={b ? `${b.adjustedHandicap}` : '—'} />
                   <BreakItem label="Strokes" value={b ? `${b.strokesReceivedOnHole}` : '—'} />
                   <BreakItem label="Net" value={b ? `${b.net}` : '—'} />
@@ -479,14 +665,6 @@ export default function LiveScoringScreen() {
             );
           })}
 
-          <View style={styles.actionsRow}>
-            <Pressable style={styles.secondaryBtnWide} onPress={clearCurrentHoleGross}>
-              <Text style={styles.secondaryBtnText}>Clear Hole Gross</Text>
-            </Pressable>
-            <Pressable style={styles.dangerBtnWide} onPress={resetRound}>
-              <Text style={styles.dangerBtnText}>Reset Round</Text>
-            </Pressable>
-          </View>
         </View>
 
         <View style={styles.card}>
@@ -510,6 +688,30 @@ export default function LiveScoringScreen() {
               </Text>
             </>
           )}
+        </View>
+
+        {courseReady ? (
+          <View style={styles.card}>
+            <Pressable
+              style={[styles.archiveBtn, !hasAnyGross && styles.archiveBtnDisabled]}
+              onPress={hasAnyGross ? onArchive : undefined}
+              disabled={!hasAnyGross}
+            >
+              <Text style={[styles.archiveBtnText, !hasAnyGross && styles.archiveBtnTextDisabled]}>Archive to History</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        <View style={styles.card}>
+          <Pressable style={styles.secondaryBtnWide} onPress={clearCurrentHoleGross}>
+            <Text style={styles.secondaryBtnText}>Clear Hole Gross</Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.card}>
+          <Pressable style={styles.dangerBtnWide} onPress={resetRound}>
+            <Text style={styles.dangerBtnText}>Reset Round</Text>
+          </Pressable>
         </View>
 
         <Text style={styles.footerMuted}>
@@ -744,6 +946,10 @@ const styles = StyleSheet.create({
   warn: { marginTop: 8, color: '#b45309', fontSize: 12, fontWeight: '900' },
 
   actionsRow: { flexDirection: 'row', gap: 10, marginTop: 6 },
+  archiveBtn: { backgroundColor: colors.primary, borderRadius: 14, paddingVertical: 12, alignItems: 'center' },
+  archiveBtnDisabled: { backgroundColor: colors.border, opacity: 0.7 },
+  archiveBtnText: { color: colors.textInverse, fontWeight: '900' },
+  archiveBtnTextDisabled: { color: colors.textSecondary },
   secondaryBtnWide: { flex: 1, borderRadius: 14, paddingVertical: 12, alignItems: 'center', backgroundColor: colors.primarySoft },
   secondaryBtnText: { color: colors.textPrimary, fontWeight: '900', fontSize: 13 },
   dangerBtnWide: { flex: 1, borderRadius: 14, paddingVertical: 12, alignItems: 'center', backgroundColor: colors.danger },

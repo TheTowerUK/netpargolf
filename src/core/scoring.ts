@@ -30,6 +30,19 @@ export type ScoringBreakdown = {
   points: number;   // 0..4
 };
 
+/** Playing handicap = courseHandicap × (allowancePercent/100) rounded. */
+export function computePlayingHandicap(
+  courseHandicap: number,
+  allowancePercent: number,
+  roundingMode: RoundingMode
+): number {
+  const raw = courseHandicap * (allowancePercent / 100);
+  if (roundingMode === 'nearest') return Math.round(raw);
+  if (roundingMode === 'floor') return Math.floor(raw);
+  if (roundingMode === 'ceil') return Math.ceil(raw);
+  return Math.round(raw);
+}
+
 export function roundWithMode(value: number, mode: RoundingMode): number {
   if (!Number.isFinite(value)) throw new Error('roundWithMode: value must be a finite number');
   switch (mode) {

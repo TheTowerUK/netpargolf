@@ -1,18 +1,35 @@
 // src/screens/ScorecardScreen.tsx
 // Printable scorecard - uses round + course from storage (same as Live Scoring).
 // Net scores computed dynamically from gross + handicap + stroke index (not persisted).
+// Supports viewing historical rounds via roundId param.
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+
+import type { RootStackParamList } from '../navigations/types';
 import type { Course } from '../core/course';
+import { scoreHoleOptionA } from '../core/scoring';
 import { loadCourse } from '../storage/courseStorage';
 import { loadRound, type PersistedRoundV1 } from '../storage/roundStorage';
+import { getRoundById } from '../storage/roundHistoryStorage';
 import { colors } from '../theme/colors';
 
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 
 const HOLES = Array.from({ length: 18 }, (_, i) => i + 1);
+
+function computePlayingHandicapFromRound(
+  courseHandicap: number,
+  allowancePercent: number,
+  roundingMode: 'nearest' | 'floor' | 'ceil'
+): number {
+  const raw = courseHandicap * (allowancePercent / 100);
+  if (roundingMode === 'floor') return Math.floor(raw);
+  if (roundingMode === 'ceil') return Math.ceil(raw);
+  return Math.round(raw);
+}
 
 /** Strokes received on a hole based on handicap and stroke index. Correct golf math. */
 function strokesReceivedOnHole(handicap: number, strokeIndex: number): number {
@@ -34,6 +51,7 @@ type Row = {
   id: string;
   name: string;
   courseHandicap: number; // for net calc
+  playingHandicap: number;
   scores: (string | number)[];
   out: number;
   in_: number;
@@ -41,26 +59,37 @@ type Row = {
   netOut: number;
   netIn: number;
   netTotal: number;
+  pointsPerHole: (number | null)[];
+  pointsOut: number;
+  pointsIn: number;
+  pointsTotal: number;
   strokesPerHole: number[];
   netsPerHole: (number | null)[];
 };
 
-export default function ScorecardScreen() {
+type Props = NativeStackScreenProps<RootStackParamList, 'Scorecard'>;
+
+export default function ScorecardScreen({ route }: Props) {
+  const viewingHistory = !!route.params?.roundId;
+
   const [course, setCourse] = useState<Course | null>(null);
   const [round, setRound] = useState<PersistedRoundV1 | null>(null);
   const [loading, setLoading] = useState(true);
-  const [handicap, setHandicap] = useState<string>('18');
+  const [side, setSide] = useState<'front' | 'back'>('front');
+  const holesShown = side === 'front' ? HOLES.slice(0, 9) : HOLES.slice(9, 18);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [c, r] = await Promise.all([loadCourse(), loadRound()]);
+      const roundId = route.params?.roundId;
+      const rPromise = roundId ? getRoundById(roundId) : loadRound();
+      const [c, r] = await Promise.all([loadCourse(), rPromise]);
       setCourse(c);
       setRound(r);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [route.params?.roundId]);
 
   useEffect(() => {
     refresh();
@@ -73,11 +102,14 @@ export default function ScorecardScreen() {
     const holes = round?.holes ?? {};
     const courseHoles = course?.holes ?? [];
 
-    const defaultHcp = parseInt(handicap, 10) || 0;
-
     return players.slice(0, 4).map((p) => {
       const hcpVal = parseInt(p.courseHandicap, 10);
-      const handicapNum = Number.isFinite(hcpVal) ? hcpVal : defaultHcp;
+      const handicapNum = Number.isFinite(hcpVal) ? hcpVal : 0;
+      const pct = parseFloat(round?.allowancePercent ?? '100');
+      const rm = (round?.roundingMode as 'nearest' | 'floor' | 'ceil') ?? 'nearest';
+      const playingHandicap = Number.isFinite(pct)
+        ? computePlayingHandicapFromRound(handicapNum, pct, rm)
+        : handicapNum;
 
       const scores = HOLES.map((h) => {
         const v = holes?.[h]?.grossByPlayer?.[p.id];
@@ -89,13 +121,17 @@ export default function ScorecardScreen() {
       let netOut: number;
       let netIn: number;
       let netTotal: number;
+      let pointsPerHole: (number | null)[];
+      let pointsOut = 0;
+      let pointsIn = 0;
+      let pointsTotal = 0;
 
       if (courseReady && courseHoles.length === 18) {
         const strokesPerHole = HOLES.map((h) => {
           const holeData = courseHoles[h - 1];
           const si = holeData?.strokeIndex;
           if (si == null || !Number.isFinite(si)) return 0;
-          return strokesReceivedOnHole(handicapNum, si);
+          return strokesReceivedOnHole(playingHandicap, si);
         });
 
         netsPerHole = scores.map((gross, i) => {
@@ -107,11 +143,40 @@ export default function ScorecardScreen() {
         netOut = netsPerHole.slice(0, 9).reduce((a, v) => a + (v ?? 0), 0);
         netIn = netsPerHole.slice(9, 18).reduce((a, v) => a + (v ?? 0), 0);
         netTotal = netOut + netIn;
+
+        pointsPerHole = HOLES.map((h) => {
+          const i = h - 1;
+          const gross = scores[i];
+          if (typeof gross !== 'number') return null;
+
+          const holeData = courseHoles[i];
+          const par = holeData?.par;
+          const si = holeData?.strokeIndex;
+          if (!Number.isFinite(par) || !Number.isFinite(si)) return null;
+
+          try {
+            const b = scoreHoleOptionA({
+              courseHandicap: playingHandicap,
+              allowancePercent: 1,
+              roundingMode: (round?.roundingMode ?? 'nearest') as 'nearest' | 'floor' | 'ceil',
+              hole: { par: par as number, strokeIndex: si as number },
+              gross,
+            });
+            return b.points;
+          } catch {
+            return null;
+          }
+        });
+
+        pointsOut = pointsPerHole.slice(0, 9).reduce((a, v) => a + (v ?? 0), 0);
+        pointsIn = pointsPerHole.slice(9, 18).reduce((a, v) => a + (v ?? 0), 0);
+        pointsTotal = pointsOut + pointsIn;
       } else {
         netsPerHole = scores.map(() => null);
         netOut = 0;
         netIn = 0;
         netTotal = 0;
+        pointsPerHole = scores.map(() => null);
       }
 
       const out = scores.slice(0, 9).reduce<number>((a, v) => a + (typeof v === 'number' ? v : 0), 0);
@@ -122,6 +187,7 @@ export default function ScorecardScreen() {
         id: p.id,
         name: p.name,
         courseHandicap: handicapNum,
+        playingHandicap,
         scores,
         out,
         in_,
@@ -129,11 +195,15 @@ export default function ScorecardScreen() {
         netOut,
         netIn,
         netTotal,
+        pointsPerHole,
+        pointsOut,
+        pointsIn,
+        pointsTotal,
         strokesPerHole: [],
         netsPerHole,
       };
     });
-  }, [round, course, handicap, courseReady]);
+  }, [round, course, courseReady]);
 
   const courseName = course?.name ?? 'No course selected';
 
@@ -146,8 +216,15 @@ export default function ScorecardScreen() {
     const html = buildScorecardHtml({
       courseName,
       courseReady,
+      meta: {
+        competitionName: round?.meta?.competitionName,
+        competitionDate: round?.meta?.competitionDate,
+        tee: round?.meta?.tee,
+        marker: round?.meta?.marker,
+      },
       players: rows.map((r) => ({
         name: r.name,
+        handicap: r.playingHandicap,
         scores: r.scores,
         netsPerHole: r.netsPerHole,
         out: r.out,
@@ -156,6 +233,9 @@ export default function ScorecardScreen() {
         netOut: r.netOut,
         netIn: r.netIn,
         netTotal: r.netTotal,
+        pointsOut: r.pointsOut,
+        pointsIn: r.pointsIn,
+        pointsTotal: r.pointsTotal,
       })),
       frontNineTotal,
       backNineTotal,
@@ -189,16 +269,17 @@ export default function ScorecardScreen() {
           <Text style={styles.title}>Scorecard</Text>
           <Text style={styles.subTitle}>{courseName}</Text>
 
+          <View style={styles.sideToggle}>
+            <Pressable onPress={() => setSide('front')} style={[styles.sideBtn, side === 'front' && styles.sideBtnActive]}>
+              <Text style={[styles.sideBtnText, side === 'front' && styles.sideBtnTextActive]}>Front 9</Text>
+            </Pressable>
+            <Pressable onPress={() => setSide('back')} style={[styles.sideBtn, side === 'back' && styles.sideBtnActive]}>
+              <Text style={[styles.sideBtnText, side === 'back' && styles.sideBtnTextActive]}>Back 9</Text>
+            </Pressable>
+          </View>
           <View style={styles.handicapRow}>
             <Text style={styles.handicapLabel}>Handicap</Text>
-            <TextInput
-              style={styles.handicapInput}
-              value={handicap}
-              onChangeText={setHandicap}
-              keyboardType="number-pad"
-              placeholder="18"
-              placeholderTextColor="#999"
-            />
+            <Text style={styles.handicapReadOnly}>Per player (edit in Live Scoring)</Text>
           </View>
           <Text style={styles.meta}>
             {round?.savedAt ? `Last saved: ${new Date(round.savedAt).toLocaleString()}` : 'No round saved yet'}
@@ -211,9 +292,11 @@ export default function ScorecardScreen() {
         </View>
 
         <View style={{ gap: 8 }}>
-          <Pressable style={styles.btn} onPress={refresh}>
-            <Text style={styles.btnText}>Refresh</Text>
-          </Pressable>
+          {!viewingHistory ? (
+            <Pressable style={styles.btn} onPress={refresh}>
+              <Text style={styles.btnText}>Refresh</Text>
+            </Pressable>
+          ) : null}
           <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onPrintOrExport} disabled={!hasData}>
             <Text style={[styles.btnText, styles.btnPrimaryText]}>
               {Platform.OS === 'web' ? 'Print' : 'Export PDF'}
@@ -238,24 +321,27 @@ export default function ScorecardScreen() {
               <Text style={styles.headerText}>Player</Text>
             </View>
 
-            {HOLES.map((h) => (
+            <View style={[styles.cell, styles.phCell]}>
+              <Text style={styles.headerText}>PH</Text>
+            </View>
+
+            {holesShown.map((h) => (
               <View key={h} style={[styles.cell, styles.holeCell]}>
                 <Text style={styles.headerText}>{h}</Text>
               </View>
             ))}
 
             <View style={[styles.cell, styles.totalCell]}>
-              <Text style={styles.headerText}>OUT</Text>
-            </View>
-            <View style={[styles.cell, styles.totalCell]}>
-              <Text style={styles.headerText}>IN</Text>
-            </View>
-            <View style={[styles.cell, styles.totalCell]}>
-              <Text style={styles.headerText}>TOTAL</Text>
+              <Text style={styles.headerText}>{side === 'front' ? 'OUT' : 'IN'}</Text>
             </View>
             {courseReady ? (
               <View style={[styles.cell, styles.totalCell]}>
-                <Text style={styles.headerText}>NET</Text>
+                <Text style={styles.headerText}>{side === 'front' ? 'NET OUT' : 'NET IN'}</Text>
+              </View>
+            ) : null}
+            {courseReady ? (
+              <View style={[styles.cell, styles.ptsCell]}>
+                <Text style={styles.headerText}>PTS</Text>
               </View>
             ) : null}
           </View>
@@ -263,30 +349,39 @@ export default function ScorecardScreen() {
           {rows.map((r, idx) => (
             <View key={r.id} style={[styles.row, idx % 2 === 1 ? styles.altRow : null]}>
               <View style={[styles.cell, styles.playerCell]}>
-                <Text style={styles.playerText}>{r.name}</Text>
+                <Text style={styles.playerText}>
+                  {r.name} <Text style={styles.hcpInline}>({r.playingHandicap})</Text>
+                </Text>
               </View>
 
-              {r.scores.map((v, i) => (
-                <View key={i} style={[styles.cell, styles.holeCell]}>
-                  <Text style={styles.scoreText}>{typeof v === 'number' ? String(v) : ''}</Text>
-                  {courseReady && typeof v === 'number' && r.netsPerHole[i] != null ? (
-                    <Text style={styles.netSubtext}>{r.netsPerHole[i]}</Text>
-                  ) : null}
-                </View>
-              ))}
+              <View style={[styles.cell, styles.phCell]}>
+                <Text style={styles.totalText}>{r.playingHandicap}</Text>
+              </View>
+
+              {holesShown.map((h) => {
+                const i = h - 1;
+                const v = r.scores[i];
+                return (
+                  <View key={h} style={[styles.cell, styles.holeCell]}>
+                    <Text style={styles.scoreText}>{typeof v === 'number' ? String(v) : ''}</Text>
+                    {courseReady && typeof v === 'number' && r.netsPerHole[i] != null ? (
+                      <Text style={styles.netSubtext}>{r.netsPerHole[i]}</Text>
+                    ) : null}
+                  </View>
+                );
+              })}
 
               <View style={[styles.cell, styles.totalCell]}>
-                <Text style={styles.totalText}>{r.out}</Text>
-              </View>
-              <View style={[styles.cell, styles.totalCell]}>
-                <Text style={styles.totalText}>{r.in_}</Text>
-              </View>
-              <View style={[styles.cell, styles.totalCell]}>
-                <Text style={styles.totalText}>{r.total}</Text>
+                <Text style={styles.totalText}>{side === 'front' ? r.out : r.in_}</Text>
               </View>
               {courseReady ? (
                 <View style={[styles.cell, styles.totalCell]}>
-                  <Text style={styles.totalText}>{r.netTotal}</Text>
+                  <Text style={styles.totalText}>{side === 'front' ? r.netOut : r.netIn}</Text>
+                </View>
+              ) : null}
+              {courseReady ? (
+                <View style={[styles.cell, styles.ptsCell]}>
+                  <Text style={styles.totalText}>{side === 'front' ? r.pointsOut : r.pointsIn}</Text>
                 </View>
               ) : null}
             </View>
@@ -297,27 +392,58 @@ export default function ScorecardScreen() {
               <Text style={styles.totalsLabel}>Totals</Text>
             </View>
 
-            {HOLES.map((h) => (
+            <View style={[styles.cell, styles.phCell]} />
+
+            {holesShown.map((h) => (
               <View key={h} style={[styles.cell, styles.holeCell]} />
             ))}
 
             <View style={[styles.cell, styles.totalCell]}>
-              <Text style={styles.totalText}>{frontNineTotal}</Text>
+              <Text style={styles.totalText}>{side === 'front' ? frontNineTotal : backNineTotal}</Text>
             </View>
-            <View style={[styles.cell, styles.totalCell]}>
-              <Text style={styles.totalText}>{backNineTotal}</Text>
-            </View>
-            <View style={[styles.cell, styles.totalCell]}>
-              <Text style={styles.totalText}>{roundTotal}</Text>
-            </View>
+
             {courseReady ? (
               <View style={[styles.cell, styles.totalCell]}>
-                <Text style={styles.totalText}>{netTotal}</Text>
+                <Text style={styles.totalText}>
+                  {side === 'front'
+                    ? rows.reduce((s, p) => s + (p.netOut ?? 0), 0)
+                    : rows.reduce((s, p) => s + (p.netIn ?? 0), 0)}
+                </Text>
+              </View>
+            ) : null}
+            {courseReady ? (
+              <View style={[styles.cell, styles.ptsCell]}>
+                <Text style={styles.totalText}>
+                  {side === 'front'
+                    ? rows.reduce((s, p) => s + (p.pointsOut ?? 0), 0)
+                    : rows.reduce((s, p) => s + (p.pointsIn ?? 0), 0)}
+                </Text>
               </View>
             ) : null}
           </View>
         </View>
       </ScrollView>
+
+      {hasData ? (
+        <View style={styles.overallTotals}>
+          <View style={styles.overallRow}>
+            <Text style={styles.overallLabel}>GROSS TOTAL</Text>
+            <Text style={styles.overallValue}>{roundTotal}</Text>
+          </View>
+          {courseReady ? (
+            <>
+              <View style={styles.overallRow}>
+                <Text style={styles.overallLabel}>NET TOTAL</Text>
+                <Text style={styles.overallValue}>{netTotal}</Text>
+              </View>
+              <View style={styles.overallRow}>
+                <Text style={styles.overallLabel}>POINTS TOTAL</Text>
+                <Text style={styles.overallValue}>{rows.reduce((s, p) => s + (p.pointsTotal ?? 0), 0)}</Text>
+              </View>
+            </>
+          ) : null}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -325,18 +451,175 @@ export default function ScorecardScreen() {
 function buildScorecardHtml(params: {
   courseName: string;
   courseReady: boolean;
-  players: { name: string; scores: (string | number)[]; netsPerHole: (number | null)[]; out: number; in_: number; total: number; netOut: number; netIn: number; netTotal: number }[];
+  meta?: {
+    competitionName?: string;
+    competitionDate?: string;
+    tee?: string;
+    marker?: string;
+  };
+  players: {
+    name: string;
+    handicap: number;
+    scores: (string | number)[];
+    netsPerHole: (number | null)[];
+    out: number;
+    in_: number;
+    total: number;
+    netOut: number;
+    netIn: number;
+    netTotal: number;
+    pointsOut: number;
+    pointsIn: number;
+    pointsTotal: number;
+  }[];
   frontNineTotal: number;
   backNineTotal: number;
   roundTotal: number;
   netTotal: number;
 }) {
-  const holes = Array.from({ length: 18 }, (_, i) => i + 1);
+  const front = Array.from({ length: 9 }, (_, i) => i + 1);
+  const back = Array.from({ length: 9 }, (_, i) => i + 10);
   const { courseReady } = params;
 
-  const netHeader = courseReady ? '<th>NET</th>' : '';
-  const netCell = (p: { netTotal: number }) => courseReady ? `<td class="tot">${p.netTotal}</td>` : '';
-  const netTotalsCell = courseReady ? `<td class="tot">${params.netTotal}</td>` : '';
+  const renderCell = (gross: string, net?: string) => {
+    const netLine = courseReady && net != null && net !== '' ? `<br><span class="net">${escapeHtml(net)}</span>` : '';
+    return `<td>${escapeHtml(gross)}${netLine}</td>`;
+  };
+
+  const renderFrontTable = () => {
+    const netHeader = courseReady ? `<th>NET OUT</th>` : '';
+    const ptsHeader = courseReady ? `<th>PTS</th>` : '';
+
+    return `
+      <h2>Front 9</h2>
+      <table>
+        <thead>
+          <tr>
+            <th class="player">Player</th>
+            <th>PH</th>
+            ${front.map((h) => `<th>${h}</th>`).join('')}
+            <th>OUT</th>
+            ${netHeader}
+            ${ptsHeader}
+          </tr>
+        </thead>
+        <tbody>
+          ${params.players
+            .map((p) => {
+              const holeCells = front
+                .map((h) => {
+                  const i = h - 1;
+                  const g = String(p.scores[i] ?? '');
+                  const n = p.netsPerHole[i] != null ? String(p.netsPerHole[i]) : '';
+                  return renderCell(g, n);
+                })
+                .join('');
+
+              const netOutCell = courseReady ? `<td class="tot">${p.netOut}</td>` : '';
+              const ptsCell = courseReady ? `<td class="tot">${p.pointsOut}</td>` : '';
+              return `
+                <tr>
+                  <td class="player">
+                    ${escapeHtml(p.name)} <span class="hcp-inline">(${p.handicap})</span>
+                  </td>
+                  <td>${p.handicap}</td>
+                  ${holeCells}
+                  <td class="tot">${p.out}</td>
+                  ${netOutCell}
+                  ${ptsCell}
+                </tr>
+              `;
+            })
+            .join('')}
+
+          <tr class="totals-row">
+            <td class="player tot">Totals</td>
+            <td></td>
+            ${front.map(() => `<td></td>`).join('')}
+            <td class="tot">${params.frontNineTotal}</td>
+            ${courseReady ? `<td class="tot">${params.players.reduce((s, p) => s + (p.netOut ?? 0), 0)}</td>` : ''}
+            ${courseReady ? `<td class="tot">${params.players.reduce((s, p) => s + (p.pointsOut ?? 0), 0)}</td>` : ''}
+          </tr>
+        </tbody>
+      </table>
+    `;
+  };
+
+  const renderBackTable = () => {
+    const netHeader = courseReady ? `<th>NET IN</th>` : '';
+    const ptsHeader = courseReady ? `<th>PTS</th>` : '';
+
+    return `
+      <h2>Back 9</h2>
+      <table>
+        <thead>
+          <tr>
+            <th class="player">Player</th>
+            <th>PH</th>
+            ${back.map((h) => `<th>${h}</th>`).join('')}
+            <th>IN</th>
+            ${netHeader}
+            ${ptsHeader}
+          </tr>
+        </thead>
+        <tbody>
+          ${params.players
+            .map((p) => {
+              const holeCells = back
+                .map((h) => {
+                  const i = h - 1;
+                  const g = String(p.scores[i] ?? '');
+                  const n = p.netsPerHole[i] != null ? String(p.netsPerHole[i]) : '';
+                  return renderCell(g, n);
+                })
+                .join('');
+
+              const netInCell = courseReady ? `<td class="tot">${p.netIn}</td>` : '';
+              const ptsCell = courseReady ? `<td class="tot">${p.pointsIn}</td>` : '';
+              return `
+                <tr>
+                  <td class="player">
+                    ${escapeHtml(p.name)} <span class="hcp-inline">(${p.handicap})</span>
+                  </td>
+                  <td>${p.handicap}</td>
+                  ${holeCells}
+                  <td class="tot">${p.in_}</td>
+                  ${netInCell}
+                  ${ptsCell}
+                </tr>
+              `;
+            })
+            .join('')}
+
+          <tr class="totals-row">
+            <td class="player tot">Totals</td>
+            <td></td>
+            ${back.map(() => `<td></td>`).join('')}
+            <td class="tot">${params.backNineTotal}</td>
+            ${courseReady ? `<td class="tot">${params.players.reduce((s, p) => s + (p.netIn ?? 0), 0)}</td>` : ''}
+            ${courseReady ? `<td class="tot">${params.players.reduce((s, p) => s + (p.pointsIn ?? 0), 0)}</td>` : ''}
+          </tr>
+        </tbody>
+      </table>
+    `;
+  };
+
+  const renderOverallTotals = () => {
+    const netBlock = courseReady
+      ? `<div class="totalsline"><span class="label">NET TOTAL</span><span class="value">${params.netTotal}</span></div>`
+      : '';
+    const ptsBlock = courseReady
+      ? `<div class="totalsline"><span class="label">POINTS TOTAL</span><span class="value">${params.players.reduce((s, p) => s + (p.pointsTotal ?? 0), 0)}</span></div>`
+      : '';
+
+    return `
+      <div class="overall">
+        <div class="totalsline"><span class="label">GROSS TOTAL</span><span class="value">${params.roundTotal}</span></div>
+        ${netBlock}
+        ${ptsBlock}
+      </div>
+    `;
+  };
 
   return `<!doctype html>
 <html>
@@ -345,60 +628,69 @@ function buildScorecardHtml(params: {
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Scorecard</title>
 <style>
-  body { font-family: Arial, sans-serif; padding: 18px; color: #000; }
-  h1 { margin: 0 0 4px 0; font-size: 22px; }
-  .sub { margin: 0 0 14px 0; font-size: 12px; }
-  table { border-collapse: collapse; width: 100%; table-layout: fixed; }
-  th, td { border: 1px solid #000; padding: 6px 4px; text-align: center; font-size: 12px; }
-  th:first-child, td:first-child { text-align: left; font-weight: 700; width: 140px; }
-  th { background: #f2f2f2; }
+  :root {
+    --primary: ${colors.primary};
+    --primarySoft: ${colors.primarySoft};
+    --card: ${colors.card};
+    --muted: ${colors.textSecondary};
+  }
+
+  body { font-family: Arial, sans-serif; padding: 16px; color: #000; }
+  h1 { margin: 0 0 4px 0; font-size: 20px; color: var(--primary); }
+  .sub { margin: 0 0 10px 0; font-size: 12px; }
+  h2 { margin: 12px 0 6px 0; font-size: 14px; color: var(--primary); }
+
+  table { border-collapse: collapse; width: 100%; table-layout: fixed; margin-bottom: 10px; }
+  th, td { border: 1px solid #222; padding: 5px 3px; text-align: center; font-size: 11px; }
+  th { background: var(--primarySoft); color: var(--primary); font-weight: 900; }
+  .player {
+    text-align: left;
+    font-weight: 700;
+    width: 130px;
+    background: var(--card);
+    white-space: nowrap;
+  }
+  .hcp-inline { font-size: 10px; color: var(--muted); font-weight: 800; }
+  .comp { margin: 8px 0 10px 0; padding: 8px 10px; border: 1px solid #222; border-radius: 8px; }
+  .comp .k { display: inline-block; width: 92px; font-weight: 900; color: var(--primary); }
   .tot { font-weight: 800; }
-  .net { font-size: 10px; color: #555; }
-  .totals-row { background: #f2f2f2; border-top: 2px solid #111; }
-  @media print { body { padding: 0; } }
+  td.tot { background: #f8f8f8; }
+  .net { font-size: 9px; color: #555; }
+
+  .totals-row { background: var(--primarySoft); border-top: 2px solid var(--primary); }
+  .overall {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 2px solid var(--primary);
+  }
+  .totalsline {
+    display: flex;
+    justify-content: space-between;
+    font-weight: 900;
+    font-size: 14px;
+  }
+  .label { margin-right: 12px; }
+  .value { min-width: 60px; text-align: right; }
+
+  @media print {
+    body { padding: 0; }
+  }
 </style>
 </head>
 <body>
   <h1>Scorecard</h1>
   <p class="sub">${escapeHtml(params.courseName)}</p>
 
-  <table>
-    <thead>
-      <tr>
-        <th>Player</th>
-        ${holes.map((h) => `<th>${h}</th>`).join('')}
-        <th>OUT</th><th>IN</th><th>TOTAL</th>${netHeader}
-      </tr>
-    </thead>
-    <tbody>
-      ${params.players
-        .map(
-          (p) => `
-        <tr>
-          <td>${escapeHtml(p.name)}</td>
-          ${p.scores.map((v, i) => {
-            const gross = escapeHtml(String(v ?? ''));
-            const net = courseReady && p.netsPerHole[i] != null ? `<br><span class="net">${p.netsPerHole[i]}</span>` : '';
-            return `<td>${gross}${net}</td>`;
-          }).join('')}
-          <td class="tot">${p.out}</td>
-          <td class="tot">${p.in_}</td>
-          <td class="tot">${p.total}</td>
-          ${netCell(p)}
-        </tr>
-      `
-        )
-        .join('')}
-      <tr class="totals-row">
-        <td class="tot" style="text-align:left; font-weight:700;">Totals</td>
-        ${holes.map(() => '<td></td>').join('')}
-        <td class="tot">${params.frontNineTotal}</td>
-        <td class="tot">${params.backNineTotal}</td>
-        <td class="tot">${params.roundTotal}</td>
-        ${netTotalsCell}
-      </tr>
-    </tbody>
-  </table>
+  <div class="comp">
+    <div><span class="k">Competition</span> ${escapeHtml(params.meta?.competitionName ?? '—')}</div>
+    <div><span class="k">Date</span> ${escapeHtml(params.meta?.competitionDate ?? '—')}</div>
+    <div><span class="k">Tee</span> ${escapeHtml(params.meta?.tee ?? '—')}</div>
+    <div><span class="k">Marker</span> ${escapeHtml(params.meta?.marker ?? '—')}</div>
+  </div>
+
+  ${renderFrontTable()}
+  ${renderBackTable()}
+  ${renderOverallTotals()}
 </body>
 </html>`;
 }
@@ -425,42 +717,51 @@ const styles = StyleSheet.create({
   emptyTitle: { fontWeight: '900', marginBottom: 6, color: colors.textPrimary },
   emptyText: { color: colors.textSecondary, lineHeight: 18, fontSize: 13 },
 
-  // Table — strictly black/white, no theme
-  table: { borderWidth: 1, borderColor: '#111' },
+  // Table — theme-aligned
+  table: { borderWidth: 1, borderColor: colors.border },
   row: { flexDirection: 'row' },
-  headerRow: { backgroundColor: '#f2f2f2' },
-  altRow: { backgroundColor: '#fafafa' },
+  headerRow: { backgroundColor: colors.primarySoft },
+  altRow: { backgroundColor: colors.background },
 
-  cell: { borderRightWidth: 1, borderRightColor: '#111', borderBottomWidth: 1, borderBottomColor: '#111', paddingVertical: 8, paddingHorizontal: 6, justifyContent: 'center' },
+  cell: { borderRightWidth: 1, borderRightColor: colors.border, borderBottomWidth: 1, borderBottomColor: colors.border, paddingVertical: 8, paddingHorizontal: 6, justifyContent: 'center' },
   playerCell: { width: 140 },
   holeCell: { width: 44, alignItems: 'center' },
+  phCell: { width: 54, alignItems: 'center' },
+  ptsCell: { width: 54, alignItems: 'center' },
   totalCell: { width: 60, alignItems: 'center' },
 
-  headerText: { fontWeight: '900', fontSize: 12 },
+  headerText: { fontWeight: '900', fontSize: 12, color: colors.textPrimary },
   playerText: { fontWeight: '900', fontSize: 12 },
+  hcpInline: { color: colors.textSecondary, fontSize: 11, fontWeight: '800' },
   scoreText: { fontSize: 12 },
-  netSubtext: { fontSize: 10, color: '#555', marginTop: 2 },
+  netSubtext: { fontSize: 10, color: colors.textSecondary, marginTop: 2 },
   totalText: { fontWeight: '900', fontSize: 12 },
+
+  sideToggle: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  sideBtn: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card },
+  sideBtnActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  sideBtnText: { fontWeight: '900', color: colors.textPrimary, fontSize: 12 },
+  sideBtnTextActive: { color: colors.textInverse },
 
   handicapRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
   handicapLabel: { fontSize: 12, fontWeight: '900', color: colors.textPrimary },
-  handicapInput: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 8,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    width: 56,
-    fontSize: 16,
-    fontWeight: '900',
+  handicapReadOnly: {
+    color: colors.textSecondary,
+    fontWeight: '800',
+    fontSize: 12,
   },
 
   totalsRow: {
     borderTopWidth: 2,
-    borderTopColor: '#111',
-    backgroundColor: '#f2f2f2',
+    borderTopColor: colors.primary,
+    backgroundColor: colors.primarySoft,
     paddingVertical: 8,
     flexDirection: 'row',
   },
   totalsLabel: { fontWeight: 'bold' },
+
+  overallTotals: { marginTop: 12, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 14, backgroundColor: colors.card },
+  overallRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
+  overallLabel: { fontWeight: '800', color: colors.textPrimary, fontSize: 13 },
+  overallValue: { fontWeight: '900', color: colors.primary, fontSize: 14 },
 });

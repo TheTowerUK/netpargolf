@@ -7,9 +7,8 @@ export type RootStackParamList = {
   CourseSetup: undefined;
   CourseSearch: undefined;
   LiveScoring: undefined;
-  Scoreboard: undefined;
-  Scorecard: undefined;
+  Scoreboard: { roundId?: string } | undefined;
+  Scorecard: { roundId?: string } | undefined;
   RoundHistory: undefined;
-  RoundDetail: { roundId: string };
   Stats: undefined;
 };

@@ -265,9 +265,12 @@ export default function CourseSetupScreen() {
           />
 
           {siDuplicateWarning ? (
-            <Text style={styles.warning}>
-              Stroke Index duplicates: {siDuplicateWarning}
-            </Text>
+            <>
+              <Text style={styles.warning}>
+                Stroke Index duplicates: {siDuplicateWarning}
+              </Text>
+              <Text style={styles.hint}>Once SI is unique 1–18, Save Course will enable.</Text>
+            </>
           ) : (
             <Text style={styles.hint}>Tip: SI should be 1–18 uniquely (1 = hardest).</Text>
           )}
@@ -286,7 +289,10 @@ export default function CourseSetupScreen() {
             <Text style={styles.savedEmpty}>No saved courses yet. Use Find course or save the current one.</Text>
           ) : (
             <>
-              {savedCourses.map((sc) => (
+              {(() => {
+                const favorites = savedCourses.filter((c) => c.isFavorite);
+                const others = savedCourses.filter((c) => !c.isFavorite);
+                const renderRow = (sc: StoredCourse) => (
                   <View key={sc.id} style={styles.savedRow}>
                     <Pressable
                       onPress={() => onToggleFavorite(sc.id)}
@@ -304,7 +310,7 @@ export default function CourseSetupScreen() {
                       )}
                     </View>
                     <View style={styles.savedActions}>
-                      {activeCourseId !== sc.id && (
+                      {activeCourseId !== sc.id && !roundInProgress && (
                         <Pressable
                           onPress={() => onSetActive(sc.id)}
                           style={styles.savedActionBtn}
@@ -326,7 +332,25 @@ export default function CourseSetupScreen() {
                       </Pressable>
                     </View>
                   </View>
-                ))}
+                );
+                return (
+                  <>
+                    {favorites.length > 0 ? (
+                      <>
+                        <Text style={styles.sectionHeader}>Favourites</Text>
+                        {favorites.map(renderRow)}
+                        {others.length > 0 ? <View style={styles.sectionDivider} /> : null}
+                      </>
+                    ) : null}
+                    {others.length > 0 ? (
+                      <>
+                        <Text style={styles.sectionHeader}>All courses</Text>
+                        {others.map(renderRow)}
+                      </>
+                    ) : null}
+                  </>
+                );
+              })()}
             </>
           )}
         </View>
@@ -569,6 +593,8 @@ const styles = StyleSheet.create({
   savedActionText: { fontSize: 12, fontWeight: '800', color: colors.primary },
   savedActionDanger: { backgroundColor: colors.dangerSoft },
   savedActionDangerText: { fontSize: 12, fontWeight: '800', color: colors.danger },
+  sectionHeader: { fontSize: 12, fontWeight: '900', color: colors.textSecondary, marginBottom: 8, marginTop: 4 },
+  sectionDivider: { height: 1, backgroundColor: colors.border, marginVertical: 10 },
 
   actionsRow: { marginTop: 12, gap: 10 },
   primaryBtn: { borderRadius: 14, paddingVertical: 14, alignItems: 'center', backgroundColor: colors.primary },

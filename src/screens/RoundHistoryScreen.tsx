@@ -18,12 +18,12 @@ import { colors } from '../theme/colors';
 import {
   listRounds,
   deleteRound,
-  type StoredRoundSummary,
+  type StoredRound,
 } from '../storage/roundHistoryStorage';
 
 export default function RoundHistoryScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const [rounds, setRounds] = useState<StoredRoundSummary[]>([]);
+  const [rounds, setRounds] = useState<StoredRound[]>([]);
 
   const refresh = useCallback(async () => {
     const list = await listRounds();
@@ -36,14 +36,18 @@ export default function RoundHistoryScreen() {
     }, [refresh])
   );
 
-  const onView = (id: string) => {
-    navigation.navigate('RoundDetail', { roundId: id });
+  const onViewScoreboard = (id: string) => {
+    navigation.navigate('Scoreboard', { roundId: id });
   };
 
-  const onDelete = (r: StoredRoundSummary) => {
+  const onViewScorecard = (id: string) => {
+    navigation.navigate('Scorecard', { roundId: id });
+  };
+
+  const onDelete = (r: StoredRound) => {
     Alert.alert(
       'Delete round?',
-      `Remove "${r.courseNameSnapshot}" from ${formatDate(r.savedAt)}?`,
+      `Remove "${r.courseName}" from ${formatDate(r.savedAt)}?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -61,13 +65,13 @@ export default function RoundHistoryScreen() {
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.title}>Round History</Text>
-      <Text style={styles.subTitle}>Saved rounds (saved when you finish or archive).</Text>
+      <Text style={styles.subTitle}>Saved rounds (saved when you archive from Scoreboard).</Text>
 
       {rounds.length === 0 ? (
         <View style={styles.card}>
           <Text style={styles.emptyTitle}>No saved rounds yet</Text>
           <Text style={styles.emptyText}>
-            Rounds are saved to history when you complete or archive them from Live Scoring.
+            Rounds are saved to history when you archive them from Scoreboard.
           </Text>
         </View>
       ) : (
@@ -75,27 +79,25 @@ export default function RoundHistoryScreen() {
           <View key={r.id} style={styles.card}>
             <View style={styles.rowTop}>
               <Text style={styles.dateText}>{formatDate(r.savedAt)}</Text>
-              <View style={styles.rowActions}>
-                <Pressable style={styles.viewBtn} onPress={() => onView(r.id)}>
-                  <Text style={styles.viewBtnText}>View</Text>
-                </Pressable>
-                <Pressable
-                  style={styles.deleteBtn}
-                  onPress={() => onDelete(r)}
-                >
-                  <Text style={styles.deleteBtnText}>Delete</Text>
-                </Pressable>
-              </View>
+              <Pressable
+                style={styles.deleteBtn}
+                onPress={() => onDelete(r)}
+              >
+                <Text style={styles.deleteBtnText}>Delete</Text>
+              </Pressable>
             </View>
-            <Text style={styles.courseName}>{r.courseNameSnapshot}</Text>
-            {r.playersSnapshot?.length ? (
-              <Text style={styles.playersText} numberOfLines={1}>
-                {r.playersSnapshot.filter(Boolean).join(', ')}
-              </Text>
+            <Text style={styles.courseName}>{r.courseName}</Text>
+            {r.teamTotal != null ? (
+              <Text style={styles.teamText}>Team: {r.teamTotal} pts</Text>
             ) : null}
-            {r.teamTotalSnapshot != null ? (
-              <Text style={styles.teamText}>Team: {r.teamTotalSnapshot} pts</Text>
-            ) : null}
+            <View style={styles.rowActions}>
+              <Pressable style={styles.viewBtn} onPress={() => onViewScoreboard(r.id)}>
+                <Text style={styles.viewBtnText}>Scoreboard</Text>
+              </Pressable>
+              <Pressable style={styles.viewBtn} onPress={() => onViewScorecard(r.id)}>
+                <Text style={styles.viewBtnText}>Scorecard</Text>
+              </Pressable>
+            </View>
           </View>
         ))
       )}
@@ -129,12 +131,14 @@ const styles = StyleSheet.create({
   },
   rowTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
   dateText: { fontSize: 13, fontWeight: '800', color: colors.textSecondary },
-  rowActions: { flexDirection: 'row', gap: 8 },
+  rowActions: { flexDirection: 'row', gap: 8, marginTop: 10 },
   viewBtn: {
-    paddingVertical: 6,
+    flex: 1,
+    paddingVertical: 8,
     paddingHorizontal: 12,
     borderRadius: 10,
     backgroundColor: colors.primary,
+    alignItems: 'center',
   },
   viewBtnText: { fontSize: 12, fontWeight: '800', color: colors.textInverse },
   deleteBtn: {
@@ -145,7 +149,6 @@ const styles = StyleSheet.create({
   },
   deleteBtnText: { fontSize: 12, fontWeight: '800', color: colors.danger },
   courseName: { fontSize: 16, fontWeight: '900', color: colors.textPrimary, marginBottom: 4 },
-  playersText: { fontSize: 12, color: colors.textSecondary, marginBottom: 2 },
   teamText: { fontSize: 12, fontWeight: '800', color: colors.primary },
 
   emptyTitle: { fontSize: 16, fontWeight: '900', marginBottom: 6, color: colors.textPrimary },
