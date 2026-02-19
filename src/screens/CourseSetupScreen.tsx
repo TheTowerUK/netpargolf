@@ -33,14 +33,19 @@ import {
   clearCourse,
 } from '../storage/courseStorage';
 import { loadRound, hasInProgressRound } from '../storage/roundStorage';
+import { hapticTap, hapticSuccess, hapticError } from '../utils/feedback';
+import { useToast } from '../components/Toast';
+import PrimaryButton from '../components/PrimaryButton';
 
 export default function CourseSetupScreen() {
+  const toast = useToast();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [course, setCourse] = useState<Course>(() => makeDefaultCourse());
   const [loading, setLoading] = useState(true);
   const [savedCourses, setSavedCourses] = useState<StoredCourse[]>([]);
   const [activeCourseId, setActiveCourseIdState] = useState<string | null>(null);
   const [roundInProgress, setRoundInProgress] = useState(false);
+  const [saveBusy, setSaveBusy] = useState(false);
 
   const refreshData = useCallback(async () => {
     const [list, activeId, round] = await Promise.all([listCourses(), getActiveCourseId(), loadRound()]);
@@ -107,16 +112,27 @@ export default function CourseSetupScreen() {
 
   const onSave = async () => {
     if (!isValidCourse(course)) {
+      hapticError();
       Alert.alert(
         'Cannot save course',
         'Please ensure you have 18 holes, Par is set, and Stroke Index uses 1–18 uniquely.'
       );
       return;
     }
-    const id = await upsertCourse(course);
-    await setActiveCourseId(id);
-    await refreshData();
-    Alert.alert('Saved ✅', 'Course Par/SI saved. Live Scoring will now lock to this course.');
+    hapticTap();
+    setSaveBusy(true);
+    try {
+      const id = await upsertCourse(course);
+      await setActiveCourseId(id);
+      await refreshData();
+      hapticSuccess();
+      toast.show('Course saved', 'success');
+    } catch (e) {
+      hapticError();
+      toast.show('Could not save. Try again.', 'error');
+    } finally {
+      setSaveBusy(false);
+    }
   };
 
   const onReset = () => {
@@ -133,10 +149,17 @@ export default function CourseSetupScreen() {
           text: 'Clear All',
           style: 'destructive',
           onPress: async () => {
-            await clearCourse();
-            setCourse(makeDefaultCourse());
-            await refreshData();
-            Alert.alert('Cleared', 'All saved courses removed.');
+            hapticTap();
+            try {
+              await clearCourse();
+              setCourse(makeDefaultCourse());
+              await refreshData();
+              hapticSuccess();
+              toast.show('Cleared', 'success');
+            } catch (e) {
+              hapticError();
+              toast.show('Could not clear. Try again.', 'error');
+            }
           },
         },
       ]
@@ -187,11 +210,19 @@ export default function CourseSetupScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            await deleteCourse(sc.id);
-            if (isActive) {
-              setCourse(makeDefaultCourse());
+            hapticTap();
+            try {
+              await deleteCourse(sc.id);
+              if (isActive) {
+                setCourse(makeDefaultCourse());
+              }
+              await refreshData();
+              hapticSuccess();
+              toast.show('Deleted', 'success');
+            } catch (e) {
+              hapticError();
+              toast.show('Could not delete. Try again.', 'error');
             }
-            await refreshData();
           },
         },
       ]
@@ -275,12 +306,13 @@ export default function CourseSetupScreen() {
             <Text style={styles.hint}>Tip: SI should be 1–18 uniquely (1 = hardest).</Text>
           )}
 
-          <Pressable
+          <PrimaryButton
+            title="Find course (free tier)"
             onPress={() => navigation.navigate('CourseSearch')}
+            variant="secondary"
             style={styles.findCourseBtn}
-          >
-            <Text style={styles.findCourseBtnText}>Find course (free tier)</Text>
-          </Pressable>
+            textStyle={{ color: colors.primary }}
+          />
         </View>
 
         <View style={styles.card}>
@@ -295,14 +327,17 @@ export default function CourseSetupScreen() {
                 const renderRow = (sc: StoredCourse) => (
                   <View key={sc.id} style={styles.savedRow}>
                     <Pressable
-                      onPress={() => onToggleFavorite(sc.id)}
-                      style={styles.starBtn}
+                      onPress={() => {
+                        hapticTap();
+                        onToggleFavorite(sc.id);
+                      }}
+                      style={({ pressed }) => [styles.starBtn, pressed && styles.btnPressed]}
                       hitSlop={8}
                     >
                       <Text style={styles.starText}>{sc.isFavorite ? '★' : '☆'}</Text>
                     </Pressable>
                     <View style={styles.savedNameWrap}>
-                      <Text style={styles.savedName} numberOfLines={1}>
+                      <Text style={styles.savedName} numberOfLines={2}>
                         {sc.course.name}
                       </Text>
                       {activeCourseId === sc.id && (
@@ -312,21 +347,27 @@ export default function CourseSetupScreen() {
                     <View style={styles.savedActions}>
                       {activeCourseId !== sc.id && !roundInProgress && (
                         <Pressable
-                          onPress={() => onSetActive(sc.id)}
-                          style={styles.savedActionBtn}
+                          onPress={() => {
+                            hapticTap();
+                            onSetActive(sc.id);
+                          }}
+                          style={({ pressed }) => [styles.savedActionBtn, pressed && styles.btnPressed]}
                         >
                           <Text style={styles.savedActionText}>Set active</Text>
                         </Pressable>
                       )}
                       <Pressable
-                        onPress={() => onEdit(sc.id)}
-                        style={styles.savedActionBtn}
+                        onPress={() => {
+                          hapticTap();
+                          onEdit(sc.id);
+                        }}
+                        style={({ pressed }) => [styles.savedActionBtn, pressed && styles.btnPressed]}
                       >
                         <Text style={styles.savedActionText}>Edit</Text>
                       </Pressable>
                       <Pressable
                         onPress={() => onDelete(sc)}
-                        style={[styles.savedActionBtn, styles.savedActionDanger]}
+                        style={({ pressed }) => [styles.savedActionBtn, styles.savedActionDanger, pressed && styles.btnPressed]}
                       >
                         <Text style={styles.savedActionDangerText}>Delete</Text>
                       </Pressable>
@@ -405,19 +446,27 @@ export default function CourseSetupScreen() {
           </View>
 
           <View style={styles.actionsRow}>
-            <Pressable
-              style={[styles.primaryBtn, (!courseValid || editingLocked) && styles.primaryBtnDisabled]}
+            <PrimaryButton
+              title="Save Course"
               onPress={onSave}
               disabled={!courseValid || editingLocked}
-            >
-              <Text style={[styles.primaryBtnText, (!courseValid || editingLocked) && styles.primaryBtnTextDisabled]}>Save Course</Text>
-            </Pressable>
-            <Pressable style={styles.secondaryBtn} onPress={onReset}>
-              <Text style={styles.secondaryBtnText}>Reset Defaults</Text>
-            </Pressable>
-            <Pressable style={styles.dangerBtn} onPress={onClear}>
-              <Text style={styles.dangerBtnText}>Clear Saved</Text>
-            </Pressable>
+              loading={saveBusy}
+              variant="primary"
+              accessibilityLabel="Save course"
+              accessibilityHint="Saves the course Par and Stroke Index for scoring"
+            />
+            <PrimaryButton
+              title="Reset Defaults"
+              onPress={() => { onReset(); toast.show('Updated', 'success', 900); }}
+              variant="secondary"
+            />
+            <PrimaryButton
+              title="Clear Saved"
+              onPress={onClear}
+              variant="danger"
+              accessibilityLabel="Clear saved courses"
+              accessibilityHint="Removes all saved courses from the list"
+            />
           </View>
         </View>
       </ScrollView>
@@ -565,14 +614,8 @@ const styles = StyleSheet.create({
   warning: { marginTop: 8, fontSize: 12, color: colors.warning, fontWeight: '900' },
   findCourseBtn: {
     marginTop: 12,
-    borderRadius: 14,
-    paddingVertical: 14,
-    alignItems: 'center',
-    backgroundColor: colors.card,
-    borderWidth: 1,
     borderColor: colors.accent,
   },
-  findCourseBtnText: { color: colors.primary, fontWeight: '900' },
 
   savedEmpty: { fontSize: 13, color: colors.textSecondary, lineHeight: 18 },
   savedRow: {
@@ -597,6 +640,8 @@ const styles = StyleSheet.create({
   sectionDivider: { height: 1, backgroundColor: colors.border, marginVertical: 10 },
 
   actionsRow: { marginTop: 12, gap: 10 },
+  btnPressed: { transform: [{ scale: 0.98 }], opacity: 0.9 },
+  btnDisabled: { opacity: 0.5 },
   primaryBtn: { borderRadius: 14, paddingVertical: 14, alignItems: 'center', backgroundColor: colors.primary },
   primaryBtnDisabled: { backgroundColor: colors.border, opacity: 0.8 },
   primaryBtnText: { color: colors.textInverse, fontWeight: '900' },

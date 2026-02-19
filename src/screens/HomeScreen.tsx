@@ -4,6 +4,8 @@
 
 import React, { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { hapticTap } from '../utils/feedback';
+import PrimaryButton from '../components/PrimaryButton';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigations/types';
 import { loadRound } from '../storage/roundStorage';
@@ -39,52 +41,65 @@ export default function HomeScreen({ navigation }: Props) {
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Quick Start</Text>
 
-        <Pressable style={styles.courseSetupBtn} onPress={() => navigation.navigate('CourseSetup')}>
-          <Text style={styles.courseSetupBtnText}>Course Setup (Par & SI)</Text>
-        </Pressable>
+        <PrimaryButton
+          title="Course Setup (Par & SI)"
+          onPress={() => navigation.navigate('CourseSetup')}
+          variant="secondary"
+          style={styles.courseSetupBtn}
+        />
 
         <View style={styles.divider} />
 
-        <Pressable style={styles.primaryBtn} onPress={() => navigation.navigate('LiveScoring')}>
-          <Text style={styles.primaryBtnText}>Live Scoring (4 players)</Text>
-        </Pressable>
+        <PrimaryButton
+          title="Live Scoring (4 players)"
+          onPress={() => navigation.navigate('LiveScoring')}
+          variant="primary"
+        />
 
         <View style={{ height: 10 }} />
 
-        <Pressable style={styles.secondaryBtn} onPress={() => navigation.navigate('Scoreboard')}>
-          <Text style={styles.secondaryBtnText}>
-            {hasSavedRound ? 'Scoreboard (resume)' : 'Scoreboard'}
-          </Text>
-          <Text style={styles.chev}>›</Text>
-        </Pressable>
+        <PrimaryButton
+          title={hasSavedRound ? 'Scoreboard (resume)' : 'Scoreboard'}
+          onPress={() => navigation.navigate('Scoreboard')}
+          variant="secondary"
+          style={styles.secondaryBtnRow}
+        />
 
         <View style={{ height: 10 }} />
 
-        <Pressable style={styles.secondaryBtn} onPress={() => navigation.navigate('Scorecard')}>
-          <Text style={styles.secondaryBtnText}>Scorecard (printable)</Text>
-          <Text style={styles.chev}>›</Text>
-        </Pressable>
+        <PrimaryButton
+          title="Scorecard (printable)"
+          onPress={() => navigation.navigate('Scorecard')}
+          variant="secondary"
+          style={styles.secondaryBtnRow}
+        />
 
         <View style={{ height: 10 }} />
 
-        <Pressable style={styles.secondaryBtn} onPress={() => navigation.navigate('RoundHistory')}>
-          <Text style={styles.secondaryBtnText}>Round History</Text>
-          <Text style={styles.chev}>›</Text>
-        </Pressable>
+        <PrimaryButton
+          title="Round History"
+          onPress={() => navigation.navigate('RoundHistory')}
+          variant="secondary"
+          style={styles.secondaryBtnRow}
+        />
 
         <View style={{ height: 10 }} />
 
-        <Pressable style={styles.secondaryBtn} onPress={() => navigation.navigate('Stats')}>
-          <Text style={styles.secondaryBtnText}>Stats</Text>
-          <Text style={styles.chev}>›</Text>
-        </Pressable>
+        <PrimaryButton
+          title="Stats"
+          onPress={() => navigation.navigate('Stats')}
+          variant="secondary"
+          style={styles.secondaryBtnRow}
+        />
 
         <View style={{ height: 10 }} />
 
-        <Pressable style={styles.secondaryBtn} onPress={() => navigation.navigate('HelpPractice')}>
-          <Text style={styles.secondaryBtnText}>Help / Practice</Text>
-          <Text style={styles.chev}>›</Text>
-        </Pressable>
+        <PrimaryButton
+          title="Help / Practice"
+          onPress={() => navigation.navigate('HelpPractice')}
+          variant="secondary"
+          style={styles.secondaryBtnRow}
+        />
 
         <Text style={styles.hint}>
           Tip: Live Scoring autosaves your round. Scoreboard shows totals and lets you continue.
@@ -122,34 +137,19 @@ const styles = StyleSheet.create({
   },
   cardTitle: { fontSize: 16, fontWeight: '900', marginBottom: 10, color: colors.textPrimary },
 
+  btnPressed: { transform: [{ scale: 0.98 }], opacity: 0.9 },
+
   courseSetupBtn: {
-    borderRadius: 14,
-    paddingVertical: 14,
-    alignItems: 'center',
-    backgroundColor: colors.card,
-    borderWidth: 1,
     borderColor: colors.accent,
   },
-  courseSetupBtnText: { color: colors.primary, fontWeight: '900', fontSize: 15 },
 
   divider: { height: 1, backgroundColor: colors.border, marginVertical: 14 },
 
-  primaryBtn: { borderRadius: 14, paddingVertical: 14, alignItems: 'center', backgroundColor: colors.primary },
-  primaryBtnText: { color: colors.textInverse, fontWeight: '900', fontSize: 15 },
-
-  secondaryBtn: {
-    borderRadius: 14,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    alignItems: 'center',
-    backgroundColor: colors.card,
-    borderWidth: 1,
-    borderColor: colors.border,
+  secondaryBtnRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    paddingHorizontal: 14,
   },
-  secondaryBtnText: { color: colors.textPrimary, fontWeight: '900', fontSize: 15 },
-  chev: { color: colors.accent, fontSize: 26, fontWeight: '900', marginLeft: 10 },
 
   hint: { marginTop: 10, fontSize: 12, color: colors.textSecondary, lineHeight: 17 },
   footerMuted: { marginTop: 8, color: colors.textSecondary, fontSize: 12, textAlign: 'center' },

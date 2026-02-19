@@ -15,6 +15,9 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import type { RootStackParamList } from '../navigations/types';
 import { colors } from '../theme/colors';
+import { hapticTap, hapticSuccess, hapticError } from '../utils/feedback';
+import { useToast } from '../components/Toast';
+import PrimaryButton from '../components/PrimaryButton';
 import {
   listRounds,
   deleteRound,
@@ -23,6 +26,7 @@ import {
 
 export default function RoundHistoryScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const toast = useToast();
   const [rounds, setRounds] = useState<StoredRound[]>([]);
 
   const refresh = useCallback(async () => {
@@ -54,8 +58,16 @@ export default function RoundHistoryScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            await deleteRound(r.id);
-            await refresh();
+            hapticTap();
+            try {
+              await deleteRound(r.id);
+              await refresh();
+              hapticSuccess();
+              toast.show('Deleted', 'success');
+            } catch (e) {
+              hapticError();
+              toast.show('Could not delete. Try again.', 'error');
+            }
           },
         },
       ]
@@ -79,24 +91,32 @@ export default function RoundHistoryScreen() {
           <View key={r.id} style={styles.card}>
             <View style={styles.rowTop}>
               <Text style={styles.dateText}>{formatDate(r.savedAt)}</Text>
-              <Pressable
-                style={styles.deleteBtn}
+              <PrimaryButton
+                title="Delete"
                 onPress={() => onDelete(r)}
-              >
-                <Text style={styles.deleteBtnText}>Delete</Text>
-              </Pressable>
+                variant="danger"
+                style={styles.deleteBtnWrap}
+                accessibilityLabel={`Delete round ${r.courseName}`}
+                accessibilityHint="Removes this round from history"
+              />
             </View>
             <Text style={styles.courseName}>{r.courseName}</Text>
             {r.teamTotal != null ? (
               <Text style={styles.teamText}>Team: {r.teamTotal} pts</Text>
             ) : null}
             <View style={styles.rowActions}>
-              <Pressable style={styles.viewBtn} onPress={() => onViewScoreboard(r.id)}>
-                <Text style={styles.viewBtnText}>Scoreboard</Text>
-              </Pressable>
-              <Pressable style={styles.viewBtn} onPress={() => onViewScorecard(r.id)}>
-                <Text style={styles.viewBtnText}>Scorecard</Text>
-              </Pressable>
+              <PrimaryButton
+                title="Scoreboard"
+                onPress={() => onViewScoreboard(r.id)}
+                variant="primary"
+                style={styles.viewBtnWrap}
+              />
+              <PrimaryButton
+                title="Scorecard"
+                onPress={() => onViewScorecard(r.id)}
+                variant="primary"
+                style={styles.viewBtnWrap}
+              />
             </View>
           </View>
         ))
@@ -129,6 +149,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     backgroundColor: colors.card,
   },
+  deleteBtnWrap: { minHeight: 36, paddingVertical: 6, paddingHorizontal: 12 },
+  viewBtnWrap: { flex: 1, minHeight: 36, paddingVertical: 8 },
   rowTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
   dateText: { fontSize: 13, fontWeight: '800', color: colors.textSecondary },
   rowActions: { flexDirection: 'row', gap: 8, marginTop: 10 },

@@ -14,15 +14,20 @@ import { getRoundById, saveRoundToHistory } from '../storage/roundHistoryStorage
 import type { Course } from '../core/course';
 import { computePlayingHandicap, scoreHoleOptionA, sumBestN } from '../core/scoring';
 import { colors } from '../theme/colors';
+import { hapticTap, hapticSuccess, hapticError } from '../utils/feedback';
+import { useToast } from '../components/Toast';
+import PrimaryButton from '../components/PrimaryButton';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Scoreboard'>;
 
 export default function ScoreboardScreen({ navigation, route }: Props) {
+  const toast = useToast();
   const viewingHistory = !!route.params?.roundId;
 
   const [round, setRound] = useState<PersistedRoundV1 | null>(null);
   const [course, setCourse] = useState<Course | null>(null);
   const [loading, setLoading] = useState(true);
+  const [archiveBusy, setArchiveBusy] = useState(false);
 
   const refresh = async () => {
     setLoading(true);
@@ -111,13 +116,23 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
   const onArchive = async () => {
     if (!round) return;
 
-    const courseId = await getActiveCourseId();
-    const courseName = course?.name ?? 'No course selected';
-    await saveRoundToHistory(round, courseId, courseName, summary?.teamTotal ?? null);
+    hapticTap();
+    setArchiveBusy(true);
+    try {
+      const courseId = await getActiveCourseId();
+      const courseName = course?.name ?? 'No course selected';
+      await saveRoundToHistory(round, courseId, courseName, summary?.teamTotal ?? null);
 
-    await clearRound();
-    Alert.alert('Archived ✅', 'Round saved to history.');
-    await refresh();
+      await clearRound();
+      hapticSuccess();
+      toast.show('Archived to History', 'success');
+      await refresh();
+    } catch (e) {
+      hapticError();
+      toast.show('Could not archive. Try again.', 'error');
+    } finally {
+      setArchiveBusy(false);
+    }
   };
 
   const onClear = async () => {
@@ -130,9 +145,16 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
           text: 'Clear',
           style: 'destructive',
           onPress: async () => {
-            await clearRound();
-            Alert.alert('Cleared', 'Saved round removed.');
-            await refresh();
+            hapticTap();
+            try {
+              await clearRound();
+              hapticSuccess();
+              toast.show('Cleared', 'success');
+              await refresh();
+            } catch (e) {
+              hapticError();
+              toast.show('Could not clear. Try again.', 'error');
+            }
           },
         },
       ]
@@ -163,17 +185,11 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
             <Row label="Last saved" value={new Date(round.savedAt).toLocaleString()} />
             {!viewingHistory ? (
               <View style={styles.actionsRow}>
-                <Pressable style={styles.primaryBtn} onPress={onContinue}>
-                  <Text style={styles.primaryBtnText}>Continue round</Text>
-                </Pressable>
-                <Pressable style={styles.secondaryBtn} onPress={refresh}>
-                  <Text style={styles.secondaryBtnText}>Refresh</Text>
-                </Pressable>
+                <PrimaryButton title="Continue round" onPress={onContinue} variant="primary" style={styles.btnFlex} />
+                <PrimaryButton title="Refresh" onPress={() => { refresh(); toast.show('Updated', 'success', 900); }} variant="secondary" style={styles.btnFlex} />
               </View>
             ) : (
-              <Pressable style={styles.secondaryBtn} onPress={() => navigation.navigate('RoundHistory')}>
-                <Text style={styles.secondaryBtnText}>Back to history</Text>
-              </Pressable>
+              <PrimaryButton title="Back to history" onPress={() => navigation.navigate('RoundHistory')} variant="secondary" />
             )}
           </View>
 
@@ -208,15 +224,24 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
               <>
                 <View style={{ height: 10 }} />
 
-                <Pressable style={styles.archiveBtn} onPress={onArchive}>
-                  <Text style={styles.archiveBtnText}>Archive to history</Text>
-                </Pressable>
+                <PrimaryButton
+                  title="Archive to History"
+                  onPress={onArchive}
+                  loading={archiveBusy}
+                  variant="primary"
+                  accessibilityLabel="Archive to history"
+                  accessibilityHint="Moves this round into your round history"
+                />
 
                 <View style={{ height: 8 }} />
 
-                <Pressable style={styles.dangerBtn} onPress={onClear}>
-                  <Text style={styles.dangerBtnText}>Clear saved round</Text>
-                </Pressable>
+                <PrimaryButton
+                  title="Clear saved round"
+                  onPress={onClear}
+                  variant="danger"
+                  accessibilityLabel="Clear saved round"
+                  accessibilityHint="Removes the saved round without archiving"
+                />
               </>
             ) : null}
           </View>
@@ -260,6 +285,7 @@ const styles = StyleSheet.create({
   rowValue: { color: colors.textPrimary, fontWeight: '900', textAlign: 'right' },
 
   actionsRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
+  btnFlex: { flex: 1 },
   primaryBtn: { flex: 1, backgroundColor: colors.primary, borderRadius: 14, paddingVertical: 12, alignItems: 'center' },
   primaryBtnText: { color: colors.textInverse, fontWeight: '900' },
   secondaryBtn: { flex: 1, backgroundColor: colors.primarySoft, borderRadius: 14, paddingVertical: 12, alignItems: 'center' },

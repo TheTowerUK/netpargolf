@@ -5,6 +5,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  InputAccessoryView,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -14,6 +16,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import type { StyleProp, TextStyle } from 'react-native';
 
 import {
   scoreHoleOptionA,
@@ -43,6 +46,9 @@ import { saveRoundToHistory } from '../storage/roundHistoryStorage';
 import { useAutosaveRound } from '../hooks/useAutosaveRound';
 import type { Course } from '../core/course';
 import { colors } from '../theme/colors';
+import { hapticTap, hapticSuccess, hapticError } from '../utils/feedback';
+import { useToast } from '../components/Toast';
+import PrimaryButton from '../components/PrimaryButton';
 
 type PlayerUI = {
   id: string;
@@ -63,11 +69,51 @@ const DEFAULT_PLAYERS: PlayerUI[] = [
   { id: 'p4', name: 'Player 4', courseHandicap: '22' },
 ];
 
+const getGrossAccessoryId = (playerId: string) => `grossAccessory_${playerId}`;
+
+function GrossAccessoryBar({
+  nativeID,
+  holeComplete,
+  onDone,
+  onNextHole,
+}: {
+  nativeID: string;
+  holeComplete: boolean;
+  onDone: () => void;
+  onNextHole: () => void;
+}) {
+  return (
+    <InputAccessoryView nativeID={nativeID}>
+      <View style={styles.accessoryBar}>
+        <Pressable onPress={onDone} style={({ pressed }) => [styles.accessoryBtn, pressed && styles.btnPressed]}>
+          <Text style={styles.accessoryBtnText}>Done</Text>
+        </Pressable>
+
+        <Pressable
+          disabled={!holeComplete}
+          onPress={onNextHole}
+          style={({ pressed }) => [
+            styles.accessoryBtnPrimary,
+            !holeComplete && styles.accessoryBtnDisabled,
+            pressed && holeComplete && styles.btnPressed,
+          ]}
+        >
+          <Text style={styles.accessoryBtnPrimaryText}>Next hole</Text>
+        </Pressable>
+      </View>
+    </InputAccessoryView>
+  );
+}
+
 export default function LiveScoringScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const toast = useToast();
 
   const [players, setPlayers] = useState<PlayerUI[]>(DEFAULT_PLAYERS);
+  const [activePlayerId, setActivePlayerId] = useState<string>(DEFAULT_PLAYERS[0].id);
+  const [pendingFocus, setPendingFocus] = useState<null | { playerId: string; field: 'name' | 'gross' | 'hcp' }>(null);
   const [holeNumber, setHoleNumber] = useState<number>(1);
+  const [playersInRound, setPlayersInRound] = useState<1 | 2 | 3 | 4>(4);
   const [bestN, setBestN] = useState<2 | 3 | 4>(2);
   const [roundingMode, setRoundingMode] = useState<RoundingMode>('nearest');
   const [allowancePercent, setAllowancePercent] = useState<string>('100');
@@ -90,6 +136,111 @@ export default function LiveScoringScreen() {
     });
     return init;
   });
+
+  const inputRefs = React.useRef<Record<string, React.RefObject<TextInput>>>({});
+  const grossStartValueRef = React.useRef<Record<string, string>>({});
+
+  const latestRef = React.useRef({ players, holes, holeNumber, playersInRound });
+  useEffect(() => {
+    latestRef.current = { players, holes, holeNumber, playersInRound };
+  }, [players, holes, holeNumber, playersInRound]);
+
+  useEffect(() => {
+    grossStartValueRef.current = {};
+  }, [holeNumber]);
+
+  useEffect(() => {
+    const required = players.slice(0, playersInRound);
+    if (!required.some((p) => p.id === activePlayerId)) {
+      const first = required[0];
+      if (first) setActivePlayerId(first.id);
+    }
+  }, [players, playersInRound, activePlayerId]);
+
+  useEffect(() => {
+    if (!pendingFocus) return;
+    if (pendingFocus.playerId !== activePlayerId) return;
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        getInputRef(pendingFocus.playerId, pendingFocus.field).current?.focus?.();
+        setPendingFocus(null);
+      });
+    });
+  }, [pendingFocus, activePlayerId]);
+
+  const activePlayers = useMemo(
+    () => players.slice(0, playersInRound),
+    [players, playersInRound]
+  );
+
+  const focusGross = (playerId: string) => {
+    setTimeout(() => {
+      getInputRef(playerId, 'gross').current?.focus?.();
+    }, 80);
+  };
+
+  const isFilledGross = (v: unknown) => v != null && String(v).trim() !== '';
+
+  const willHoleBeCompleteAfter = (playerIdJustEdited: string, newValue: string) => {
+    const required = players.slice(0, playersInRound);
+    return required.every((p) => {
+      const v =
+        p.id === playerIdJustEdited
+          ? newValue
+          : (holes[holeNumber]?.grossByPlayer?.[p.id] ?? '');
+      return String(v).trim() !== '';
+    });
+  };
+
+  const allPlayersFilledForHole = (holeNo: number) => {
+    const { players: pls, holes: hs, playersInRound: pir } = latestRef.current;
+    const st = hs[holeNo];
+    if (!st?.grossByPlayer) return false;
+    const required = pls.slice(0, pir);
+    return required.every((p) => isFilledGross(st.grossByPlayer[p.id]));
+  };
+
+  const advanceToNextPlayer = (currentId: string) => {
+    const { players: pls, playersInRound: pir } = latestRef.current;
+    const required = pls.slice(0, pir);
+    const idx = required.findIndex((p) => p.id === currentId);
+    if (idx < 0) return;
+
+    const next = required[(idx + 1) % required.length];
+    setActivePlayerId(next.id);
+    focusGross(next.id);
+  };
+
+  const advanceToNextHoleIfComplete = () => {
+    const { holeNumber: h, players: pls } = latestRef.current;
+
+    if (!allPlayersFilledForHole(h)) return;
+
+    if (h >= 18) {
+      toast.show('Round complete (Hole 18)', 'success', 1200);
+      return;
+    }
+
+    const nextHole = h + 1;
+    setHoleNumber(nextHole);
+
+    const first = pls[0];
+    if (first) {
+      setActivePlayerId(first.id);
+      focusGross(first.id);
+    }
+
+    toast.show(`Hole ${h} complete → Hole ${nextHole}`, 'success', 900);
+  };
+
+  const getInputRef = (playerId: string, field: 'name' | 'gross' | 'hcp') => {
+    const key = `${playerId}:${field}`;
+    if (!inputRefs.current[key]) {
+      inputRefs.current[key] = React.createRef<TextInput>();
+    }
+    return inputRefs.current[key];
+  };
 
   useEffect(() => {
     (async () => {
@@ -208,11 +359,11 @@ export default function LiveScoringScreen() {
   }, [breakdowns, bestN]);
 
   const holeComplete = useMemo(() => {
-    return players.every((pl) => {
+    return activePlayers.every((pl) => {
       const gross = currentHole.grossByPlayer[pl.id];
       return gross != null && String(gross).trim() !== '';
     });
-  }, [players, currentHole]);
+  }, [activePlayers, currentHole]);
 
   const roundTotals = useMemo(() => {
     const totals = players.map((pl) => ({
@@ -306,25 +457,32 @@ export default function LiveScoringScreen() {
           text: 'Reset',
           style: 'destructive',
           onPress: async () => {
-            await clearRound();
+            hapticTap();
+            try {
+              await clearRound();
 
-            setPlayers(DEFAULT_PLAYERS);
-            setBestN(2);
-            setRoundingMode('nearest');
-            setAllowancePercent('100');
-            setCompetitionName('Club Stableford');
-            setCompetitionDate(new Date().toISOString().slice(0, 10));
-            setTee('White');
-            setMarker('');
+              setPlayers(DEFAULT_PLAYERS);
+              setBestN(2);
+              setRoundingMode('nearest');
+              setAllowancePercent('100');
+              setCompetitionName('Club Stableford');
+              setCompetitionDate(new Date().toISOString().slice(0, 10));
+              setTee('White');
+              setMarker('');
 
-            setHoles(() => {
-              const reset: Record<number, HoleState> = {};
-              HOLES.forEach((h) => (reset[h] = { grossByPlayer: {} }));
-              return reset;
-            });
+              setHoles(() => {
+                const reset: Record<number, HoleState> = {};
+                HOLES.forEach((h) => (reset[h] = { grossByPlayer: {} }));
+                return reset;
+              });
 
-            setHoleNumber(1);
-            Alert.alert('Reset', 'Round cleared.');
+              setHoleNumber(1);
+              hapticSuccess();
+              toast.show('Round reset', 'success');
+            } catch (e) {
+              hapticError();
+              toast.show('Could not reset. Try again.', 'error');
+            }
           },
         },
       ]
@@ -351,34 +509,41 @@ export default function LiveScoringScreen() {
           text: 'Archive',
           style: 'default',
           onPress: async () => {
-            const payload: PersistedRoundV1 = {
-              version: 1,
-              savedAt: Date.now(),
-              holeNumber,
-              bestN,
-              roundingMode,
-              allowancePercent,
-              meta: { competitionName, competitionDate, tee, marker },
-              players,
-              holes,
-            };
+            hapticTap();
+            try {
+              const payload: PersistedRoundV1 = {
+                version: 1,
+                savedAt: Date.now(),
+                holeNumber,
+                bestN,
+                roundingMode,
+                allowancePercent,
+                meta: { competitionName, competitionDate, tee, marker },
+                players,
+                holes,
+              };
 
-            const courseId = await getActiveCourseId();
-            const courseName = course?.name ?? 'No course selected';
-            const teamTotal = roundTotals?.teamTotal ?? null;
+              const courseId = await getActiveCourseId();
+              const courseName = course?.name ?? 'No course selected';
+              const teamTotal = roundTotals?.teamTotal ?? null;
 
-            await saveRoundToHistory(payload, courseId, courseName, teamTotal);
-            await clearRound();
+              await saveRoundToHistory(payload, courseId, courseName, teamTotal);
+              await clearRound();
 
-            setHoles(() => {
-              const reset: Record<number, HoleState> = {};
-              HOLES.forEach((h) => (reset[h] = { grossByPlayer: {} }));
-              return reset;
-            });
-            setHoleNumber(1);
+              setHoles(() => {
+                const reset: Record<number, HoleState> = {};
+                HOLES.forEach((h) => (reset[h] = { grossByPlayer: {} }));
+                return reset;
+              });
+              setHoleNumber(1);
 
-            Alert.alert('Round saved', 'Saved to Round History.');
-            navigation.navigate('RoundHistory');
+              hapticSuccess();
+              toast.show('Archived to History', 'success');
+              navigation.navigate('RoundHistory');
+            } catch (e) {
+              hapticError();
+              toast.show('Could not archive. Try again.', 'error');
+            }
           },
         },
       ]
@@ -430,10 +595,16 @@ export default function LiveScoringScreen() {
           )}
 
           <View style={styles.courseBtns}>
-            <Pressable style={styles.smallBtn} onPress={() => navigation.navigate('Scorecard')}>
+            <Pressable
+              style={({ pressed }) => [styles.smallBtn, pressed && styles.btnPressed]}
+              onPress={() => { hapticTap(); navigation.navigate('Scorecard'); }}
+            >
               <Text style={styles.smallBtnText}>View Scorecard</Text>
             </Pressable>
-            <Pressable style={styles.smallBtn} onPress={refreshCourse}>
+            <Pressable
+              style={({ pressed }) => [styles.smallBtn, pressed && styles.btnPressed]}
+              onPress={() => { hapticTap(); refreshCourse(); }}
+            >
               <Text style={styles.smallBtnText}>Refresh</Text>
             </Pressable>
           </View>
@@ -505,9 +676,11 @@ export default function LiveScoringScreen() {
               then come back and tap Refresh.
             </Text>
 
-            <Pressable style={styles.primaryBtn} onPress={() => navigation.navigate('CourseSetup')}>
-              <Text style={styles.primaryBtnText}>Go to Course Setup</Text>
-            </Pressable>
+            <PrimaryButton
+              title="Go to Course Setup"
+              onPress={() => navigation.navigate('CourseSetup')}
+              variant="primary"
+            />
           </View>
         ) : null}
 
@@ -518,8 +691,8 @@ export default function LiveScoringScreen() {
             {HOLES.map((h) => (
               <Pressable
                 key={h}
-                onPress={() => goToHole(h)}
-                style={[styles.holeChip, h === holeNumber && styles.holeChipActive]}
+                onPress={() => { hapticTap(); goToHole(h); }}
+                style={({ pressed }) => [styles.holeChip, h === holeNumber && styles.holeChipActive, pressed && styles.btnPressed]}
               >
                 <Text style={h === holeNumber ? styles.holeChipTextActive : styles.holeChipText}>
                   {h}
@@ -556,6 +729,19 @@ export default function LiveScoringScreen() {
           </View>
 
           <View style={styles.field}>
+            <Text style={styles.label}>Players scoring this round</Text>
+            <View style={styles.pills}>
+              <Pill text="1" active={playersInRound === 1} onPress={() => setPlayersInRound(1)} />
+              <Pill text="2" active={playersInRound === 2} onPress={() => setPlayersInRound(2)} />
+              <Pill text="3" active={playersInRound === 3} onPress={() => setPlayersInRound(3)} />
+              <Pill text="4" active={playersInRound === 4} onPress={() => setPlayersInRound(4)} />
+            </View>
+            <Text style={styles.hint}>
+              Only the first {playersInRound} player(s) will be required to complete each hole.
+            </Text>
+          </View>
+
+          <View style={styles.field}>
             <Text style={styles.label}>Handicap Allowance %</Text>
             <TextInput
               value={allowancePercent}
@@ -581,28 +767,49 @@ export default function LiveScoringScreen() {
           </View>
         </View>
 
-        <View style={styles.card}>
+        <View style={[styles.card, styles.playersOuterCard]}>
           <Text style={styles.cardTitle}>Players</Text>
           <Text style={styles.muted}>
             Tip: keep Course Hcp constant; just enter Gross for each hole.
           </Text>
+          <Text style={styles.muted}>
+            Tap a player header (or any greyed field) to set the active player.
+          </Text>
 
           {players.map((pl, idx) => {
             const b = breakdowns[idx];
+            const isActive = pl.id === activePlayerId;
             const grossVal = currentHole.grossByPlayer[pl.id] ?? '';
             const grossNum = parseInt(grossVal, 10);
             const par = lockedPar ?? 0;
             const grossVsPar = Number.isFinite(grossNum) && Number.isFinite(par) ? grossNum - par : null;
             const grossCellStyle = grossVsPar != null ? getGrossVsParStyle(grossVsPar) : undefined;
             return (
-              <View key={pl.id} style={styles.playerCard}>
-                <View style={styles.playerHeader}>
-                  <Text style={styles.playerName}>{pl.name}</Text>
+              <View
+                key={pl.id}
+                style={[
+                  styles.playerCard,
+                  isActive && styles.playerCardActive,
+                  isActive && styles.playerCardActiveShadow,
+                ]}
+              >
+                <Pressable
+                  onPress={() => { hapticTap(); setActivePlayerId(pl.id); }}
+                  style={({ pressed }) => [styles.playerHeader, pressed && styles.btnPressed]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Set active player: ${pl.name}`}
+                  accessibilityHint="Highlights this player for easier scoring"
+                >
+                  <View style={styles.playerHeaderLeft}>
+                    <Text style={styles.playerName}>{pl.name}</Text>
+                    {isActive ? <Text style={styles.activePill}>ACTIVE</Text> : null}
+                  </View>
+
                   <View style={styles.pointsBadge}>
                     <Text style={styles.pointsBadgeValue}>{b ? b.points : '—'}</Text>
                     <Text style={styles.pointsBadgeLabel}>pts</Text>
                   </View>
-                </View>
+                </Pressable>
 
                 <View style={styles.row}>
                   <FieldText
@@ -611,6 +818,12 @@ export default function LiveScoringScreen() {
                     onChangeText={(v) => setPlayers((prev) => prev.map((p) => (p.id === pl.id ? { ...p, name: v } : p)))}
                     keyboardType="default"
                     hint="Player name"
+                    enabled={isActive}
+                    onRequestEnable={() => {
+                      setActivePlayerId(pl.id);
+                      setPendingFocus({ playerId: pl.id, field: 'name' });
+                    }}
+                    inputRef={getInputRef(pl.id, 'name')}
                   />
                   <FieldText
                     label="Gross"
@@ -621,7 +834,56 @@ export default function LiveScoringScreen() {
                     }}
                     keyboardType="number-pad"
                     hint="strokes"
-                    inputContainerStyle={grossCellStyle}
+                    inputContainerStyle={{
+                      ...(grossCellStyle ?? {}),
+                      ...(isActive ? styles.activeInputRing : {}),
+                    }}
+                    enabled={isActive}
+                    onRequestEnable={() => {
+                      setActivePlayerId(pl.id);
+                      setPendingFocus({ playerId: pl.id, field: 'gross' });
+                    }}
+                    inputRef={getInputRef(pl.id, 'gross')}
+                    inputAccessoryViewID={Platform.OS === 'ios' ? getGrossAccessoryId(pl.id) : undefined}
+                    onFocus={() => {
+                      grossStartValueRef.current[pl.id] = (grossVal ?? '').trim();
+                    }}
+                    onEndEditing={() => {
+                      if (!isActive) return;
+
+                      const start = (grossStartValueRef.current[pl.id] ?? '').trim();
+                      const end = (grossVal ?? '').trim();
+
+                      if (start !== '' || end === '') return;
+                      if (!/^\d+$/.test(end)) return;
+
+                      const n = Number(end);
+                      if (!Number.isFinite(n) || n < 1 || n > 20) return;
+
+                      const complete = willHoleBeCompleteAfter(pl.id, end);
+
+                      if (complete) {
+                        if (holeNumber < 18) {
+                          const nextHole = holeNumber + 1;
+                          setHoleNumber(nextHole);
+
+                          const first = players.slice(0, playersInRound)[0];
+                          if (first) {
+                            setActivePlayerId(first.id);
+                            setPendingFocus({ playerId: first.id, field: 'gross' });
+                          }
+                          toast.show(`Hole ${holeNumber} complete → Hole ${nextHole}`, 'success', 900);
+                        } else {
+                          toast.show('Hole 18 complete', 'success', 1100);
+                        }
+                      } else {
+                        const required = players.slice(0, playersInRound);
+                        const idx = required.findIndex((p) => p.id === pl.id);
+                        const next = required[(idx + 1) % required.length];
+                        setActivePlayerId(next.id);
+                        setPendingFocus({ playerId: next.id, field: 'gross' });
+                      }
+                    }}
                   />
                 </View>
 
@@ -632,6 +894,12 @@ export default function LiveScoringScreen() {
                     onChangeText={(v) => setPlayers((prev) => prev.map((p) => (p.id === pl.id ? { ...p, courseHandicap: v } : p)))}
                     keyboardType="number-pad"
                     hint="e.g. 18"
+                    enabled={isActive}
+                    onRequestEnable={() => {
+                      setActivePlayerId(pl.id);
+                      setPendingFocus({ playerId: pl.id, field: 'hcp' });
+                    }}
+                    inputRef={getInputRef(pl.id, 'hcp')}
                   />
                 </View>
 
@@ -692,32 +960,70 @@ export default function LiveScoringScreen() {
 
         {courseReady ? (
           <View style={styles.card}>
-            <Pressable
-              style={[styles.archiveBtn, !hasAnyGross && styles.archiveBtnDisabled]}
-              onPress={hasAnyGross ? onArchive : undefined}
+            <PrimaryButton
+              title="Archive to History"
+              onPress={onArchive}
               disabled={!hasAnyGross}
-            >
-              <Text style={[styles.archiveBtnText, !hasAnyGross && styles.archiveBtnTextDisabled]}>Archive to History</Text>
-            </Pressable>
+              variant="primary"
+              accessibilityLabel="Archive to history"
+              accessibilityHint="Moves this round into your round history"
+            />
           </View>
         ) : null}
 
         <View style={styles.card}>
-          <Pressable style={styles.secondaryBtnWide} onPress={clearCurrentHoleGross}>
-            <Text style={styles.secondaryBtnText}>Clear Hole Gross</Text>
-          </Pressable>
+          <PrimaryButton
+            title="Clear Hole Gross"
+            onPress={() => { clearCurrentHoleGross(); toast.show('Updated', 'success', 900); }}
+            variant="secondary"
+          />
         </View>
 
         <View style={styles.card}>
-          <Pressable style={styles.dangerBtnWide} onPress={resetRound}>
-            <Text style={styles.dangerBtnText}>Reset Round</Text>
-          </Pressable>
+          <PrimaryButton
+            title="Reset Round"
+            onPress={resetRound}
+            variant="danger"
+            accessibilityLabel="Reset round"
+            accessibilityHint="Clears all scores and starts a new round"
+          />
         </View>
 
         <Text style={styles.footerMuted}>
           v0.2 — Locked course Par/SI + live scoring.
         </Text>
       </ScrollView>
+
+      {Platform.OS === 'ios'
+        ? players.map((pl) => (
+            <GrossAccessoryBar
+              key={pl.id}
+              nativeID={getGrossAccessoryId(pl.id)}
+              holeComplete={holeComplete}
+              onDone={() => {
+                hapticTap();
+                Keyboard.dismiss();
+              }}
+              onNextHole={() => {
+                hapticTap();
+                if (!holeComplete) return;
+                if (holeNumber < 18) {
+                  const nextHole = holeNumber + 1;
+                  setHoleNumber(nextHole);
+
+                  const first = players.slice(0, playersInRound)[0];
+                  if (first) {
+                    setActivePlayerId(first.id);
+                    setPendingFocus({ playerId: first.id, field: 'gross' });
+                  }
+                  toast.show(`Hole ${holeNumber} complete → Hole ${nextHole}`, 'success', 900);
+                } else {
+                  toast.show('Hole 18 complete', 'success', 1100);
+                }
+              }}
+            />
+          ))
+        : null}
     </KeyboardAvoidingView>
   );
 }
@@ -730,7 +1036,10 @@ function formatDiff(netVsPar: number) {
 
 function Pill({ text, active, onPress }: { text: string; active: boolean; onPress: () => void }) {
   return (
-    <Pressable onPress={onPress} style={[styles.pill, active ? styles.pillActive : styles.pillInactive]}>
+    <Pressable
+      onPress={() => { hapticTap(); onPress(); }}
+      style={({ pressed }) => [styles.pill, active ? styles.pillActive : styles.pillInactive, pressed && styles.btnPressed]}
+    >
       <Text style={[styles.pillText, active ? styles.pillTextActive : styles.pillTextInactive]}>{text}</Text>
     </Pressable>
   );
@@ -742,21 +1051,56 @@ function FieldText(props: {
   onChangeText: (v: string) => void;
   keyboardType?: 'default' | 'number-pad' | 'decimal-pad';
   hint?: string;
-  inputContainerStyle?: { backgroundColor: string };
+  inputContainerStyle?: StyleProp<TextStyle>;
+  enabled?: boolean;
+  onRequestEnable?: () => void;
+  inputRef?: React.RefObject<TextInput>;
+  inputAccessoryViewID?: string;
+  onFocus?: () => void;
+  onEndEditing?: () => void;
 }) {
+  const enabled = props.enabled ?? true;
+
   return (
     <View style={styles.field}>
       <Text style={styles.label}>{props.label}</Text>
-      <TextInput
-        value={props.value}
-        onChangeText={props.onChangeText}
-        keyboardType={props.keyboardType ?? 'default'}
-        style={[styles.input, props.inputContainerStyle]}
-        placeholder={props.hint}
-        placeholderTextColor="#999"
-        autoCorrect={false}
-        autoCapitalize="none"
-      />
+
+      <View style={styles.inputWrap}>
+        <TextInput
+          ref={props.inputRef}
+          inputAccessoryViewID={props.inputAccessoryViewID}
+          value={props.value}
+          onChangeText={props.onChangeText}
+          keyboardType={props.keyboardType ?? 'default'}
+          style={[
+            styles.input,
+            props.inputContainerStyle,
+            !enabled && styles.inputDisabled,
+          ]}
+          placeholder={props.hint}
+          placeholderTextColor="#999"
+          autoCorrect={false}
+          autoCapitalize="none"
+          editable={enabled}
+          selectTextOnFocus={enabled}
+          onFocus={props.onFocus}
+          onEndEditing={props.onEndEditing}
+        />
+
+        {!enabled && props.onRequestEnable ? (
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => {
+              hapticTap();
+              props.onRequestEnable?.();
+            }}
+            accessibilityRole="button"
+            accessibilityLabel={`Activate player to edit ${props.label}`}
+            accessibilityHint="Sets this player as active so you can edit their fields"
+          />
+        ) : null}
+      </View>
+
       {props.hint ? <Text style={styles.hint}>{props.hint}</Text> : null}
     </View>
   );
@@ -806,6 +1150,15 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     backgroundColor: colors.card,
     flexDirection: 'column',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOpacity: 0.06,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 4 },
+      },
+      android: { elevation: 2 },
+    }),
   },
   courseNameBlock: { marginBottom: 10 },
   courseLabel: { fontSize: 11, color: '#555', fontWeight: '900' },
@@ -825,6 +1178,50 @@ const styles = StyleSheet.create({
   liveCourseName: { fontSize: 16, fontWeight: '900', color: colors.primary, marginTop: 2 },
   courseBtns: { flexDirection: 'row', gap: 8, justifyContent: 'center' },
 
+  btnPressed: { transform: [{ scale: 0.98 }], opacity: 0.9 },
+
+  accessoryBar: {
+    backgroundColor: colors.card,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+  },
+  accessoryBtn: {
+    backgroundColor: colors.chip,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+  },
+  accessoryBtnText: {
+    fontWeight: '900',
+    color: colors.textPrimary,
+  },
+  accessoryBtnPrimary: {
+    backgroundColor: colors.primary,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+  },
+  accessoryBtnPrimaryText: {
+    fontWeight: '900',
+    color: colors.textInverse,
+  },
+  accessoryBtnDisabled: {
+    opacity: 0.45,
+  },
+  accessoryBtnTextDisabled: {
+    color: colors.textInverse,
+    opacity: 0.85,
+  },
   smallBtn: { backgroundColor: colors.primarySoft, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12 },
   smallBtnText: { fontWeight: '900', color: colors.textPrimary },
 
@@ -835,13 +1232,48 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 12,
     marginBottom: 12,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOpacity: 0.05,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 3 },
+      },
+      android: { elevation: 2 },
+    }),
   },
   warnTitle: { fontWeight: '900', color: colors.warning, marginBottom: 6 },
   warnText: { color: colors.warning, lineHeight: 18, fontSize: 13 },
   primaryBtn: { marginTop: 10, borderRadius: 14, paddingVertical: 14, alignItems: 'center', backgroundColor: colors.primary },
   primaryBtnText: { color: colors.textInverse, fontWeight: '900' },
 
-  card: { borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 12, marginBottom: 12, backgroundColor: colors.card },
+  cardShadow: {
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  card: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 12,
+    backgroundColor: colors.card,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOpacity: 0.06,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 4 },
+      },
+      android: { elevation: 2 },
+    }),
+  },
+  playersOuterCard: {
+    borderColor: '#EAEAEA',
+  },
   cardTitle: { fontSize: 16, fontWeight: '900', marginBottom: 8 },
 
   holeChips: { gap: 8, paddingVertical: 2, paddingRight: 6 },
@@ -880,6 +1312,14 @@ const styles = StyleSheet.create({
     fontSize: 16,
     backgroundColor: '#fff',
   },
+  inputWrap: {
+    position: 'relative',
+  },
+  inputDisabled: {
+    backgroundColor: colors.chip,
+    color: colors.textSecondary,
+    borderColor: '#E6E6E6',
+  },
   hint: { fontSize: 11, color: '#666', marginTop: 4 },
 
   pills: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
@@ -909,13 +1349,50 @@ const styles = StyleSheet.create({
 
   playerCard: {
     borderWidth: 1,
-    borderColor: '#eee',
+    borderColor: colors.border,
     borderRadius: 14,
     padding: 12,
     marginBottom: 10,
-    backgroundColor: '#fff',
+    backgroundColor: colors.card,
   },
-  playerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  playerCardActive: {
+    borderWidth: 2.5,
+    borderColor: colors.primary,
+    backgroundColor: colors.primarySoft,
+  },
+  playerCardActiveShadow: Platform.select({
+    ios: {
+      shadowColor: '#000',
+      shadowOpacity: 0.10,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 5 },
+    },
+    android: { elevation: 3 },
+  }),
+  playerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(0,0,0,0.06)',
+  },
+  playerHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  activePill: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: colors.primary,
+    color: colors.textInverse,
+    fontWeight: '900',
+    fontSize: 11,
+    overflow: 'hidden',
+  },
   playerName: { fontSize: 16, fontWeight: '900' },
 
   pointsBadge: {
@@ -943,6 +1420,10 @@ const styles = StyleSheet.create({
   breakLabel: { fontSize: 10, color: '#666', fontWeight: '900' },
   breakValue: { fontSize: 13, color: '#111', fontWeight: '900', marginTop: 4 },
 
+  activeInputRing: {
+    borderColor: colors.primary,
+    borderWidth: 2,
+  },
   warn: { marginTop: 8, color: '#b45309', fontSize: 12, fontWeight: '900' },
 
   actionsRow: { flexDirection: 'row', gap: 10, marginTop: 6 },

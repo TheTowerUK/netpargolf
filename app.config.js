@@ -15,6 +15,10 @@ module.exports = {
         process.env.GOLFCOURSE_API_KEY ??
         process.env.EXPO_PUBLIC_GOLFCOURSE_API_KEY ??
         '',
+      eas: {
+        ...(appJson.expo?.extra?.eas ?? {}),
+        projectId: '6bd586fc-83e4-4edf-8812-cfac752b1494',
+      },
     },
   },
 };

@@ -27,10 +27,13 @@ import { findUkHolesFallback } from '../services/bthreeGolfApi';
 import { loadCourseDetailsCache } from '../storage/courseDetailsCache';
 import { saveActiveCourse } from '../storage/courseStorage';
 import { loadLastSearchQuery, saveLastSearchQuery } from '../storage/searchStorage';
+import { hapticTap, hapticSuccess, hapticError } from '../utils/feedback';
+import { useToast } from '../components/Toast';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'CourseSearch'>;
 
 export default function CourseSearchScreen({ navigation }: Props) {
+  const toast = useToast();
   const apiKey =
     (Constants.expoConfig?.extra as Record<string, string> | undefined)?.golfCourseApiKey ??
     (Constants.manifest as { extra?: Record<string, string> } | undefined)?.extra?.golfCourseApiKey ??
@@ -112,6 +115,7 @@ export default function CourseSearchScreen({ navigation }: Props) {
   const handleSelect = useCallback(
     async (item: CourseSearchResult) => {
       if (!apiKey) return;
+      hapticTap();
       setSelectingId(item.id);
       try {
         let course = await getCourse(item.id, { apiKey });
@@ -197,8 +201,11 @@ export default function CourseSearchScreen({ navigation }: Props) {
         }
 
         await saveActiveCourse(course);
+        hapticSuccess();
+        toast.show('Course saved', 'success');
         navigation.navigate('CourseSetup');
       } catch (e: unknown) {
+        hapticError();
         Alert.alert(
           'Unable to contact course provider',
           e instanceof Error ? e.message : 'Please check your connection and API key.'
