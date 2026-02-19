@@ -5,6 +5,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { hapticTap } from '../utils/feedback';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import type { RootStackParamList } from '../navigations/types';
@@ -270,10 +271,16 @@ export default function ScorecardScreen({ route }: Props) {
           <Text style={styles.subTitle}>{courseName}</Text>
 
           <View style={styles.sideToggle}>
-            <Pressable onPress={() => setSide('front')} style={[styles.sideBtn, side === 'front' && styles.sideBtnActive]}>
+            <Pressable
+              onPress={() => { hapticTap(); setSide('front'); }}
+              style={({ pressed }) => [styles.sideBtn, side === 'front' && styles.sideBtnActive, pressed && styles.btnPressed]}
+            >
               <Text style={[styles.sideBtnText, side === 'front' && styles.sideBtnTextActive]}>Front 9</Text>
             </Pressable>
-            <Pressable onPress={() => setSide('back')} style={[styles.sideBtn, side === 'back' && styles.sideBtnActive]}>
+            <Pressable
+              onPress={() => { hapticTap(); setSide('back'); }}
+              style={({ pressed }) => [styles.sideBtn, side === 'back' && styles.sideBtnActive, pressed && styles.btnPressed]}
+            >
               <Text style={[styles.sideBtnText, side === 'back' && styles.sideBtnTextActive]}>Back 9</Text>
             </Pressable>
           </View>
@@ -293,11 +300,18 @@ export default function ScorecardScreen({ route }: Props) {
 
         <View style={{ gap: 8 }}>
           {!viewingHistory ? (
-            <Pressable style={styles.btn} onPress={refresh}>
+            <Pressable
+              style={({ pressed }) => [styles.btn, pressed && styles.btnPressed]}
+              onPress={() => { hapticTap(); refresh(); }}
+            >
               <Text style={styles.btnText}>Refresh</Text>
             </Pressable>
           ) : null}
-          <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onPrintOrExport} disabled={!hasData}>
+          <Pressable
+            style={({ pressed }) => [styles.btn, styles.btnPrimary, pressed && hasData && styles.btnPressed]}
+            onPress={() => { hapticTap(); onPrintOrExport(); }}
+            disabled={!hasData}
+          >
             <Text style={[styles.btnText, styles.btnPrimaryText]}>
               {Platform.OS === 'web' ? 'Print' : 'Export PDF'}
             </Text>
@@ -628,6 +642,20 @@ function buildScorecardHtml(params: {
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Scorecard</title>
 <style>
+  /* Force background colours to render in PDF/print (WebKit/Expo Print) */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  html, body {
+    background: #ffffff;
+  }
+  @page {
+    size: A4 landscape;
+    margin: 12mm;
+  }
+
   :root {
     --primary: ${colors.primary};
     --primarySoft: ${colors.primarySoft};
@@ -635,29 +663,96 @@ function buildScorecardHtml(params: {
     --muted: ${colors.textSecondary};
   }
 
-  body { font-family: Arial, sans-serif; padding: 16px; color: #000; }
-  h1 { margin: 0 0 4px 0; font-size: 20px; color: var(--primary); }
-  .sub { margin: 0 0 10px 0; font-size: 12px; }
-  h2 { margin: 12px 0 6px 0; font-size: 14px; color: var(--primary); }
+  body { font-family: Arial, sans-serif; padding: 16px; color: #000; position: relative; }
 
-  table { border-collapse: collapse; width: 100%; table-layout: fixed; margin-bottom: 10px; }
+  body::before {
+    content: "NetParGolf";
+    position: absolute;
+    top: 40%;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(-20deg);
+    font-size: 80px;
+    font-weight: 900;
+    color: rgba(0, 0, 0, 0.05);
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .content {
+    position: relative;
+    z-index: 1;
+  }
+  /* Top-right watermark anchored to printable area */
+  body::after {
+    content: "${params.courseName.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}";
+    position: absolute;
+    top: 4mm;
+    right: 12mm;
+    font-size: 20px;
+    font-weight: 900;
+    color: rgba(0, 0, 0, 0.05);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  h1 { margin: 0 0 6px 0; font-size: 22px; font-weight: 900; color: var(--primary); }
+  .sub { margin: 0 0 10px 0; font-size: 12px; }
+  h2 { margin: 16px 0 6px 0; font-size: 14px; font-weight: 900; color: var(--primary); border-bottom: 2px solid var(--primarySoft); padding-bottom: 4px; }
+
+  table { border-collapse: collapse; width: 100%; table-layout: fixed; margin-bottom: 14px; border: 2px solid var(--primary); }
   th, td { border: 1px solid #222; padding: 5px 3px; text-align: center; font-size: 11px; }
-  th { background: var(--primarySoft); color: var(--primary); font-weight: 900; }
+  th { background: var(--primarySoft) !important; color: var(--primary) !important; font-weight: 900; }
   .player {
     text-align: left;
     font-weight: 700;
     width: 130px;
-    background: var(--card);
+    background: var(--card) !important;
     white-space: nowrap;
   }
   .hcp-inline { font-size: 10px; color: var(--muted); font-weight: 800; }
-  .comp { margin: 8px 0 10px 0; padding: 8px 10px; border: 1px solid #222; border-radius: 8px; }
-  .comp .k { display: inline-block; width: 92px; font-weight: 900; color: var(--primary); }
+  .comp {
+    margin: 10px 0 14px 0;
+    padding: 0;
+    border: 1.5px solid var(--primary);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .comp-row {
+    display: flex;
+    border-bottom: 1px solid #ddd;
+  }
+  .comp-row:last-child {
+    border-bottom: none;
+  }
+  .comp-label {
+    width: 120px;
+    padding: 8px 10px;
+    font-weight: 900;
+    color: var(--primary);
+    background: var(--primarySoft);
+    border-right: 2px solid var(--primary);
+  }
+  .comp-value {
+    flex: 1;
+    padding: 8px 12px;
+  }
   .tot { font-weight: 800; }
-  td.tot { background: #f8f8f8; }
+  td.tot { background: #f8f8f8 !important; }
   .net { font-size: 9px; color: #555; }
 
-  .totals-row { background: var(--primarySoft); border-top: 2px solid var(--primary); }
+  /* Zebra striping (tbody only) */
+  tbody tr:nth-child(even):not(.totals-row) td {
+    background: #fafafa !important;
+  }
+  tbody tr:nth-child(odd):not(.totals-row) td {
+    background: #ffffff !important;
+  }
+  /* Keep totals row dominant */
+  tr.totals-row td {
+    background: var(--primarySoft) !important;
+  }
+  .totals-row { border-top: 2px solid var(--primary); }
   .overall {
     margin-top: 10px;
     padding-top: 10px;
@@ -672,25 +767,54 @@ function buildScorecardHtml(params: {
   .label { margin-right: 12px; }
   .value { min-width: 60px; text-align: right; }
 
+  .footer {
+    margin-top: 18px;
+    padding-top: 8px;
+    border-top: 2px solid var(--primary);
+    font-size: 10px;
+    color: #555;
+    display: flex;
+    justify-content: space-between;
+  }
+
   @media print {
     body { padding: 0; }
   }
 </style>
 </head>
 <body>
-  <h1>Scorecard</h1>
-  <p class="sub">${escapeHtml(params.courseName)}</p>
+  <div class="content">
+    <h1>Scorecard</h1>
+    <p class="sub">${escapeHtml(params.courseName)}</p>
 
-  <div class="comp">
-    <div><span class="k">Competition</span> ${escapeHtml(params.meta?.competitionName ?? '—')}</div>
-    <div><span class="k">Date</span> ${escapeHtml(params.meta?.competitionDate ?? '—')}</div>
-    <div><span class="k">Tee</span> ${escapeHtml(params.meta?.tee ?? '—')}</div>
-    <div><span class="k">Marker</span> ${escapeHtml(params.meta?.marker ?? '—')}</div>
+    <div class="comp">
+      <div class="comp-row">
+        <div class="comp-label">Competition</div>
+        <div class="comp-value">${escapeHtml(params.meta?.competitionName ?? '—')}</div>
+      </div>
+      <div class="comp-row">
+        <div class="comp-label">Date</div>
+        <div class="comp-value">${escapeHtml(params.meta?.competitionDate ?? '—')}</div>
+      </div>
+      <div class="comp-row">
+        <div class="comp-label">Tee</div>
+        <div class="comp-value">${escapeHtml(params.meta?.tee ?? '—')}</div>
+      </div>
+      <div class="comp-row">
+        <div class="comp-label">Marker</div>
+        <div class="comp-value">${escapeHtml(params.meta?.marker ?? '—')}</div>
+      </div>
+    </div>
+
+    ${renderFrontTable()}
+    ${renderBackTable()}
+    ${renderOverallTotals()}
+
+    <div class="footer">
+      <div>NetParGolf</div>
+      <div>Generated ${new Date().toLocaleString()}</div>
+    </div>
   </div>
-
-  ${renderFrontTable()}
-  ${renderBackTable()}
-  ${renderOverallTotals()}
 </body>
 </html>`;
 }
@@ -708,6 +832,7 @@ const styles = StyleSheet.create({
   meta: { fontSize: 11, color: colors.textSecondary, marginTop: 6 },
   courseNote: { fontSize: 11, color: colors.warning, marginTop: 4, fontStyle: 'italic' },
 
+  btnPressed: { transform: [{ scale: 0.98 }], opacity: 0.9 },
   btn: { paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, backgroundColor: colors.primarySoft },
   btnText: { fontWeight: '900', color: colors.textPrimary, fontSize: 12 },
   btnPrimary: { backgroundColor: colors.primary },
