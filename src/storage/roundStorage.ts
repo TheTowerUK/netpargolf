@@ -7,7 +7,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export type PersistedPlayer = {
   id: string;
   name: string;
-  courseHandicap: string;     // keep as string to avoid input churn
+  handicapIndex?: string;     // optional (e.g. "29.7") — UI/display for now
+  courseHandicap: string;     // CH as string to avoid input churn
   allowancePercent?: string;  // deprecated: now at round level
 };
 
@@ -26,7 +27,7 @@ export type PersistedRoundV1 = {
   meta?: {
     competitionName?: string;
     competitionDate?: string; // YYYY-MM-DD
-    tee?: 'White' | 'Yellow' | 'Red' | 'Blue';
+    tee?: 'White' | 'Yellow' | 'Red' | 'Blue' | 'Winter';
     marker?: string;
   };
 

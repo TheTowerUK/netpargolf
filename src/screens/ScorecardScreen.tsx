@@ -3,11 +3,14 @@
 // Net scores computed dynamically from gross + handicap + stroke index (not persisted).
 // Supports viewing historical rounds via roundId param.
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { hapticTap } from '../utils/feedback';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigations/types';
 import type { Course } from '../core/course';
 import { scoreHoleOptionA } from '../core/scoring';
@@ -68,16 +71,45 @@ type Row = {
   netsPerHole: (number | null)[];
 };
 
+const TIP_KEY_PAR_SI = '@netpargolf/tip_par_si_edit:v1';
+
 type Props = NativeStackScreenProps<RootStackParamList, 'Scorecard'>;
 
 export default function ScorecardScreen({ route }: Props) {
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const viewingHistory = !!route.params?.roundId;
 
   const [course, setCourse] = useState<Course | null>(null);
   const [round, setRound] = useState<PersistedRoundV1 | null>(null);
   const [loading, setLoading] = useState(true);
   const [side, setSide] = useState<'front' | 'back'>('front');
+  const [showParSiTip, setShowParSiTip] = useState(false);
   const holesShown = side === 'front' ? HOLES.slice(0, 9) : HOLES.slice(9, 18);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const seen = await AsyncStorage.getItem(TIP_KEY_PAR_SI);
+        if (!seen) setShowParSiTip(true);
+      } catch {
+        // If storage fails, don't block UI; just show nothing.
+      }
+    })();
+  }, []);
+
+  const dismissParSiTip = async () => {
+    setShowParSiTip(false);
+    try {
+      await AsyncStorage.setItem(TIP_KEY_PAR_SI, '1');
+    } catch {
+      // ignore
+    }
+  };
+
+  const openEditParSi = () => {
+    hapticTap();
+    navigation.navigate('CourseSetup');
+  };
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -318,6 +350,75 @@ export default function ScorecardScreen({ route }: Props) {
           </Pressable>
         </View>
       </View>
+
+      {showParSiTip ? (
+        <View style={styles.tipBanner}>
+          <Text style={styles.tipText}>
+            Tip: Par and Stroke Index (SI) on the scorecard are <Text style={styles.tipBold}>editable</Text>. Tap{' '}
+            <Text style={styles.tipBold}>Edit</Text> to update them.
+          </Text>
+
+          <Pressable
+            onPress={dismissParSiTip}
+            style={({ pressed }) => [styles.tipDismiss, pressed && styles.btnPressed]}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss tip"
+          >
+            <Text style={styles.tipDismissText}>Got it</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {courseReady ? (
+        <View style={styles.parSiSection}>
+          <View style={styles.parSiHeaderRow}>
+            <Text style={styles.parSiTitle}>Scorecard Par / SI</Text>
+
+            <View style={styles.parSiRight}>
+              <View style={styles.editableChip}>
+                <Text style={styles.editableChipText}>Editable</Text>
+              </View>
+
+              <Pressable
+                onPress={openEditParSi}
+                style={({ pressed }) => [styles.editBtn, pressed && styles.btnPressed]}
+                accessibilityRole="button"
+                accessibilityLabel="Edit par and stroke index"
+                accessibilityHint="Opens editor to change Par and SI for the scorecard"
+              >
+                <Text style={styles.editBtnText}>Edit</Text>
+              </Pressable>
+            </View>
+          </View>
+
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.parSiValuesScroll}>
+            <View style={styles.parSiValuesRow}>
+              <Text style={styles.parSiRowLabel}>Par</Text>
+              {holesShown.map((h) => {
+                const holeData = course?.holes?.[h - 1];
+                const par = holeData?.par;
+                return (
+                  <View key={h} style={styles.parSiCell}>
+                    <Text style={styles.parSiCellText}>{Number.isFinite(par) ? par : '—'}</Text>
+                  </View>
+                );
+              })}
+            </View>
+            <View style={styles.parSiValuesRow}>
+              <Text style={styles.parSiRowLabel}>SI</Text>
+              {holesShown.map((h) => {
+                const holeData = course?.holes?.[h - 1];
+                const si = holeData?.strokeIndex;
+                return (
+                  <View key={h} style={styles.parSiCell}>
+                    <Text style={styles.parSiCellText}>{Number.isFinite(si) ? si : '—'}</Text>
+                  </View>
+                );
+              })}
+            </View>
+          </ScrollView>
+        </View>
+      ) : null}
 
       {!hasData ? (
         <View style={styles.empty}>
@@ -889,4 +990,60 @@ const styles = StyleSheet.create({
   overallRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
   overallLabel: { fontWeight: '800', color: colors.textPrimary, fontSize: 13 },
   overallValue: { fontWeight: '900', color: colors.primary, fontSize: 14 },
+
+  parSiSection: { marginBottom: 12 },
+  parSiHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  parSiTitle: { fontWeight: '900', fontSize: 14, color: colors.textPrimary },
+  parSiRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  editableChip: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  editableChipText: { fontSize: 11, fontWeight: '900', color: colors.textSecondary },
+  editBtn: {
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.primarySoft,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  editBtnText: { fontSize: 12, fontWeight: '900', color: colors.primary },
+
+  parSiValuesScroll: { marginTop: 4 },
+  parSiValuesRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+  parSiRowLabel: { width: 32, fontWeight: '900', fontSize: 11, color: colors.textSecondary },
+  parSiCell: { width: 36, alignItems: 'center' },
+  parSiCellText: { fontSize: 12, fontWeight: '800', color: colors.textPrimary },
+
+  tipBanner: {
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.primarySoft,
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  tipText: { flex: 1, color: colors.textPrimary, fontSize: 12, lineHeight: 16 },
+  tipBold: { fontWeight: '900' },
+  tipDismiss: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: colors.primary,
+  },
+  tipDismissText: { color: colors.textInverse, fontWeight: '900', fontSize: 12 },
 });

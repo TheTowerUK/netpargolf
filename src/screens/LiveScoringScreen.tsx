@@ -53,6 +53,7 @@ import PrimaryButton from '../components/PrimaryButton';
 type PlayerUI = {
   id: string;
   name: string;
+  handicapIndex?: string; // optional
   courseHandicap: string;
 };
 
@@ -62,11 +63,26 @@ type HoleState = {
 
 const HOLES = Array.from({ length: 18 }, (_, i) => i + 1);
 
+type AllowancePreset = { key: string; label: string; pct: number };
+
+// NOTE: These formats are "single allowance % applied to each player's Course Handicap".
+// Do NOT include Foursomes / Greensomes / Scramble here (they require team formulas).
+const ALLOWANCE_PRESETS: AllowancePreset[] = [
+  { key: 'stableford', label: 'Individual Stableford', pct: 95 },
+  { key: 'strokeplay', label: 'Individual Stroke Play', pct: 95 },
+  { key: 'parbogey', label: 'Individual Par/Bogey', pct: 95 },
+  { key: 'matchplay', label: 'Individual Match Play', pct: 100 },
+  { key: 'fourball-stroke', label: 'Four-Ball Stroke Play', pct: 85 },
+  { key: 'fourball-stableford', label: 'Four-Ball Stableford', pct: 85 },
+  { key: 'fourball-match', label: 'Four-Ball Match Play', pct: 90 },
+  { key: 'maxscore', label: 'Individual Maximum Score', pct: 95 },
+];
+
 const DEFAULT_PLAYERS: PlayerUI[] = [
-  { id: 'p1', name: 'Player 1', courseHandicap: '18' },
-  { id: 'p2', name: 'Player 2', courseHandicap: '14' },
-  { id: 'p3', name: 'Player 3', courseHandicap: '10' },
-  { id: 'p4', name: 'Player 4', courseHandicap: '22' },
+  { id: 'p1', name: 'Player 1', handicapIndex: '', courseHandicap: '18' },
+  { id: 'p2', name: 'Player 2', handicapIndex: '', courseHandicap: '14' },
+  { id: 'p3', name: 'Player 3', handicapIndex: '', courseHandicap: '10' },
+  { id: 'p4', name: 'Player 4', handicapIndex: '', courseHandicap: '22' },
 ];
 
 const getGrossAccessoryId = (playerId: string) => `grossAccessory_${playerId}`;
@@ -111,18 +127,35 @@ export default function LiveScoringScreen() {
 
   const [players, setPlayers] = useState<PlayerUI[]>(DEFAULT_PLAYERS);
   const [activePlayerId, setActivePlayerId] = useState<string>(DEFAULT_PLAYERS[0].id);
-  const [pendingFocus, setPendingFocus] = useState<null | { playerId: string; field: 'name' | 'gross' | 'hcp' }>(null);
+  const [pendingFocus, setPendingFocus] = useState<
+    null | { playerId: string; field: 'name' | 'gross' | 'hcp' | 'hi' }
+  >(null);
   const [holeNumber, setHoleNumber] = useState<number>(1);
+  const [editingHoleNumber, setEditingHoleNumber] = useState<number | null>(null);
+  const [editHoleModalOpen, setEditHoleModalOpen] = useState(false);
+
+  const isEditMode = editingHoleNumber != null;
+  const displayedHoleNumber = editingHoleNumber ?? holeNumber;
+
+  const closeEditMode = () => {
+    setEditingHoleNumber(null);
+    setEditHoleModalOpen(false);
+  };
+
   const [playersInRound, setPlayersInRound] = useState<1 | 2 | 3 | 4>(4);
   const [bestN, setBestN] = useState<2 | 3 | 4>(2);
   const [roundingMode, setRoundingMode] = useState<RoundingMode>('nearest');
-  const [allowancePercent, setAllowancePercent] = useState<string>('100');
+
+  // Preset is just a convenience label; scoring uses allowancePercent.
+  // Default to WHS Singles 95%.
+  const [formatKey, setFormatKey] = useState<string>('stableford');
+  const [allowancePercent, setAllowancePercent] = useState<string>('95');
   const [competitionName, setCompetitionName] = useState('Club Stableford');
   const [competitionDate, setCompetitionDate] = useState(() => {
     const d = new Date();
     return d.toISOString().slice(0, 10); // YYYY-MM-DD
   });
-  const [tee, setTee] = useState<'White' | 'Yellow' | 'Red' | 'Blue'>('White');
+  const [tee, setTee] = useState<'White' | 'Yellow' | 'Red' | 'Blue' | 'Winter'>('White');
   const [marker, setMarker] = useState('');
 
   const [course, setCourse] = useState<Course | null>(null);
@@ -234,7 +267,7 @@ export default function LiveScoringScreen() {
     toast.show(`Hole ${h} complete → Hole ${nextHole}`, 'success', 900);
   };
 
-  const getInputRef = (playerId: string, field: 'name' | 'gross' | 'hcp') => {
+  const getInputRef = (playerId: string, field: 'name' | 'gross' | 'hcp' | 'hi') => {
     const key = `${playerId}:${field}`;
     if (!inputRefs.current[key]) {
       inputRefs.current[key] = React.createRef<TextInput>();
@@ -259,9 +292,23 @@ export default function LiveScoringScreen() {
         const saved = await loadRound();
         if (saved) {
           setPlayers(
-            saved.players.map(({ id, name, courseHandicap }) => ({ id, name, courseHandicap }))
+            saved.players.map(({ id, name, courseHandicap, handicapIndex }) => ({
+              id,
+              name,
+              courseHandicap,
+              handicapIndex: handicapIndex ?? '',
+            }))
           );
-          setAllowancePercent(saved.allowancePercent ?? '100');
+          const loadedAllowance = saved.allowancePercent ?? '95';
+          setAllowancePercent(loadedAllowance);
+
+          // Best-effort: pick a preset chip that matches the loaded % (if any).
+          const loadedPct = parseFloat(loadedAllowance);
+          if (Number.isFinite(loadedPct)) {
+            const match = ALLOWANCE_PRESETS.find((p) => p.pct === loadedPct);
+            if (match) setFormatKey(match.key);
+          }
+
           const m = saved.meta;
           if (m?.competitionName) setCompetitionName(m.competitionName);
           if (m?.competitionDate) setCompetitionDate(m.competitionDate);
@@ -303,12 +350,12 @@ export default function LiveScoringScreen() {
     450
   );
 
-  const currentHole = holes[holeNumber];
+  const currentHole = holes[displayedHoleNumber];
 
   const lockedHole = useMemo(() => {
     if (!course?.holes || course.holes.length !== 18) return null;
-    return course.holes[holeNumber - 1] ?? null;
-  }, [course, holeNumber]);
+    return course.holes[displayedHoleNumber - 1] ?? null;
+  }, [course, displayedHoleNumber]);
 
   const lockedPar = lockedHole?.par ?? null;
   const lockedSI = lockedHole?.strokeIndex ?? null;
@@ -358,7 +405,15 @@ export default function LiveScoringScreen() {
     return sumBestN(valid.map((b) => b.points), Math.min(bestN, valid.length));
   }, [breakdowns, bestN]);
 
-  const holeComplete = useMemo(() => {
+  const holeCompleteCurrent = useMemo(() => {
+    const st = holes[holeNumber];
+    return activePlayers.every((pl) => {
+      const gross = st?.grossByPlayer?.[pl.id];
+      return gross != null && String(gross).trim() !== '';
+    });
+  }, [activePlayers, holes, holeNumber]);
+
+  const holeCompleteDisplayed = useMemo(() => {
     return activePlayers.every((pl) => {
       const gross = currentHole.grossByPlayer[pl.id];
       return gross != null && String(gross).trim() !== '';
@@ -428,17 +483,38 @@ export default function LiveScoringScreen() {
     return { players: totals, teamTotal };
   }, [holes, players, bestN, roundingMode, allowancePercent, course]);
 
-  const updateGross = (playerId: string, value: string) => {
+  const updateGross = (playerId: string, value: string, holeNo: number = holeNumber) => {
     setHoles((prev) => ({
       ...prev,
-      [holeNumber]: {
-        ...prev[holeNumber],
-        grossByPlayer: { ...prev[holeNumber].grossByPlayer, [playerId]: value },
+      [holeNo]: {
+        ...prev[holeNo],
+        grossByPlayer: { ...prev[holeNo].grossByPlayer, [playerId]: value },
       },
     }));
   };
 
-  const goToHole = (h: number) => setHoleNumber(h);
+  const goToHole = (h: number) => {
+    if (isEditMode) {
+      setEditingHoleNumber(h);
+      return;
+    }
+
+    if (h < holeNumber) {
+      toast.show('Previous holes are locked. Use Edit hole to make changes.', 'info', 1200);
+      return;
+    }
+
+    if (h > holeNumber) {
+      if (!allPlayersFilledForHole(holeNumber)) {
+        toast.show('Complete this hole first (or use Edit hole).', 'info', 1200);
+        return;
+      }
+      setHoleNumber(h);
+      return;
+    }
+
+    setHoleNumber(h);
+  };
 
   const clearCurrentHoleGross = () => {
     setHoles((prev) => ({
@@ -464,7 +540,8 @@ export default function LiveScoringScreen() {
               setPlayers(DEFAULT_PLAYERS);
               setBestN(2);
               setRoundingMode('nearest');
-              setAllowancePercent('100');
+              setFormatKey('stableford');
+              setAllowancePercent('95');
               setCompetitionName('Club Stableford');
               setCompetitionDate(new Date().toISOString().slice(0, 10));
               setTee('White');
@@ -650,6 +727,7 @@ export default function LiveScoringScreen() {
                 <Pill text="Yellow" active={tee === 'Yellow'} onPress={() => setTee('Yellow')} />
                 <Pill text="Red" active={tee === 'Red'} onPress={() => setTee('Red')} />
                 <Pill text="Blue" active={tee === 'Blue'} onPress={() => setTee('Blue')} />
+                <Pill text="Winter" active={tee === 'Winter'} onPress={() => setTee('Winter')} />
               </View>
             </View>
           </View>
@@ -685,16 +763,44 @@ export default function LiveScoringScreen() {
         ) : null}
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Hole</Text>
+          <View style={styles.holeHeaderRow}>
+            <Text style={styles.cardTitle}>Hole</Text>
+
+            <Pressable
+              onPress={() => {
+                hapticTap();
+                setEditHoleModalOpen(true);
+                setEditingHoleNumber((prev) => prev ?? holeNumber);
+              }}
+              style={({ pressed }) => [styles.editHoleBtn, pressed && styles.btnPressed]}
+              accessibilityRole="button"
+              accessibilityLabel="Edit hole"
+              accessibilityHint="Pick a previous hole to correct scores"
+            >
+              <Text style={styles.editHoleBtnText}>{isEditMode ? 'Editing…' : 'Edit hole'}</Text>
+            </Pressable>
+          </View>
+
+          {isEditMode ? (
+            <View style={styles.editingBanner}>
+              <Text style={styles.editingBannerText}>Editing Hole {displayedHoleNumber}</Text>
+              <Pressable
+                onPress={() => { hapticTap(); closeEditMode(); }}
+                style={({ pressed }) => [styles.editingDoneBtn, pressed && styles.btnPressed]}
+              >
+                <Text style={styles.editingDoneBtnText}>Done</Text>
+              </Pressable>
+            </View>
+          ) : null}
 
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.holeChips}>
             {HOLES.map((h) => (
               <Pressable
                 key={h}
                 onPress={() => { hapticTap(); goToHole(h); }}
-                style={({ pressed }) => [styles.holeChip, h === holeNumber && styles.holeChipActive, pressed && styles.btnPressed]}
+                style={({ pressed }) => [styles.holeChip, h === displayedHoleNumber && styles.holeChipActive, pressed && styles.btnPressed]}
               >
-                <Text style={h === holeNumber ? styles.holeChipTextActive : styles.holeChipText}>
+                <Text style={h === displayedHoleNumber ? styles.holeChipTextActive : styles.holeChipText}>
                   {h}
                 </Text>
               </Pressable>
@@ -742,24 +848,67 @@ export default function LiveScoringScreen() {
           </View>
 
           <View style={styles.field}>
-            <Text style={styles.label}>Handicap Allowance %</Text>
+            <Text style={styles.label}>Format preset</Text>
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.presetChips}
+            >
+              {ALLOWANCE_PRESETS.map((p) => {
+                const active = formatKey === p.key;
+                return (
+                  <Pressable
+                    key={p.key}
+                    onPress={() => {
+                      hapticTap();
+                      setFormatKey(p.key);
+                      setAllowancePercent(String(p.pct));
+                    }}
+                    style={({ pressed }) => [
+                      styles.presetChip,
+                      active && styles.presetChipActive,
+                      pressed && styles.btnPressed,
+                    ]}
+                  >
+                    <Text style={active ? styles.presetChipTextActive : styles.presetChipText}>
+                      {p.label} • {p.pct}%
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            <Text style={styles.hint}>
+              Pick a preset to set allowance quickly. You can still enter any % below.
+            </Text>
+
+            <Text style={[styles.label, { marginTop: 10 }]}>Handicap Allowance %</Text>
             <TextInput
               value={allowancePercent}
-              onChangeText={setAllowancePercent}
+              onChangeText={(v) => {
+                setAllowancePercent(v);
+
+                const n = parseFloat(v);
+                if (Number.isFinite(n)) {
+                  const match = ALLOWANCE_PRESETS.find((p) => p.pct === n);
+                  if (match) setFormatKey(match.key);
+                }
+              }}
               keyboardType="decimal-pad"
               style={styles.input}
-              placeholder="100"
+              placeholder="95"
               placeholderTextColor="#999"
             />
             <Text style={styles.hint}>
-              Applied to all players for this round.
+              Playing Handicap (PH) = round(Course Handicap × allowance). PH is used for strokes/points.
             </Text>
           </View>
 
           <View style={styles.teamBox}>
             <View>
-              <Text style={styles.teamLabel}>Hole {holeNumber} team points</Text>
-              {holeComplete ? (
+              <Text style={styles.teamLabel}>Hole {displayedHoleNumber} team points</Text>
+              {holeCompleteDisplayed ? (
                 <Text style={styles.holeCompleteText}>✓ Hole complete</Text>
               ) : null}
             </View>
@@ -779,7 +928,10 @@ export default function LiveScoringScreen() {
           {players.map((pl, idx) => {
             const b = breakdowns[idx];
             const isActive = pl.id === activePlayerId;
+            const defaultSlotName = `Player ${idx + 1}`;
+            const showSlotLine = (pl.name ?? '').trim() !== defaultSlotName;
             const grossVal = currentHole.grossByPlayer[pl.id] ?? '';
+            const playerHoleDone = grossVal != null && String(grossVal).trim() !== '';
             const grossNum = parseInt(grossVal, 10);
             const par = lockedPar ?? 0;
             const grossVsPar = Number.isFinite(grossNum) && Number.isFinite(par) ? grossNum - par : null;
@@ -800,14 +952,39 @@ export default function LiveScoringScreen() {
                   accessibilityLabel={`Set active player: ${pl.name}`}
                   accessibilityHint="Highlights this player for easier scoring"
                 >
-                  <View style={styles.playerHeaderLeft}>
-                    <Text style={styles.playerName}>{pl.name}</Text>
-                    {isActive ? <Text style={styles.activePill}>ACTIVE</Text> : null}
+                  {/* Row 1: Player title + ACTIVE (inline) + points */}
+                  <View style={styles.playerHeaderTopRow}>
+                    <View style={styles.playerHeaderLeft}>
+                      <View>
+                        <Text style={styles.playerName}>{pl.name}</Text>
+                        {showSlotLine ? <Text style={styles.playerIndex}>Player {idx + 1}</Text> : null}
+                      </View>
+                      {isActive ? (
+                        <View style={styles.activePillChip}>
+                          <Text style={styles.activePillText}>ACTIVE</Text>
+                        </View>
+                      ) : null}
+                    </View>
+
+                    <View style={[styles.pointsBadge, !playerHoleDone && styles.pointsBadgeOff]}>
+                      <Text style={[styles.pointsBadgeValue, !playerHoleDone && styles.pointsBadgeValueOff]}>
+                        {b ? b.points : '—'}
+                      </Text>
+                      <Text style={[styles.pointsBadgeLabel, !playerHoleDone && styles.pointsBadgeLabelOff]}>
+                        pts
+                      </Text>
+                    </View>
                   </View>
 
-                  <View style={styles.pointsBadge}>
-                    <Text style={styles.pointsBadgeValue}>{b ? b.points : '—'}</Text>
-                    <Text style={styles.pointsBadgeLabel}>pts</Text>
+                  {/* Row 2: Hole pill */}
+                  <View style={styles.holePillRow}>
+                    <View style={[styles.holePill, playerHoleDone && styles.holePillDone]}>
+                      <Text style={[styles.holePillText, playerHoleDone && styles.holePillTextDone]}>
+                        H{displayedHoleNumber}
+                        {Number.isFinite(lockedPar) ? ` • Par ${lockedPar}` : ''}
+                        {Number.isFinite(lockedSI) ? ` • SI ${lockedSI}` : ''}
+                      </Text>
+                    </View>
                   </View>
                 </Pressable>
 
@@ -824,17 +1001,23 @@ export default function LiveScoringScreen() {
                       setPendingFocus({ playerId: pl.id, field: 'name' });
                     }}
                     inputRef={getInputRef(pl.id, 'name')}
+                    inputContainerStyle={{
+                      ...styles.inputContainerCompact,
+                      ...(isActive ? styles.activeInputRing : {}),
+                    }}
                   />
+
                   <FieldText
                     label="Gross"
                     value={grossVal}
                     onChangeText={(v) => {
                       if (!courseReady) ensureCourse();
-                      updateGross(pl.id, v);
+                      updateGross(pl.id, v, displayedHoleNumber);
                     }}
                     keyboardType="number-pad"
                     hint="strokes"
                     inputContainerStyle={{
+                      ...styles.inputContainerCompact,
                       ...(grossCellStyle ?? {}),
                       ...(isActive ? styles.activeInputRing : {}),
                     }}
@@ -849,6 +1032,7 @@ export default function LiveScoringScreen() {
                       grossStartValueRef.current[pl.id] = (grossVal ?? '').trim();
                     }}
                     onEndEditing={() => {
+                      if (isEditMode) return;
                       if (!isActive) return;
 
                       const start = (grossStartValueRef.current[pl.id] ?? '').trim();
@@ -889,23 +1073,48 @@ export default function LiveScoringScreen() {
 
                 <View style={styles.row}>
                   <FieldText
-                    label="Course Hcp"
+                    label="H.I."
+                    value={pl.handicapIndex ?? ''}
+                    onChangeText={(v) =>
+                      setPlayers((prev) => prev.map((p) => (p.id === pl.id ? { ...p, handicapIndex: v } : p)))
+                    }
+                    keyboardType="decimal-pad"
+                    hint="e.g. 29.7"
+                    enabled={isActive}
+                    onRequestEnable={() => {
+                      setActivePlayerId(pl.id);
+                      setPendingFocus({ playerId: pl.id, field: 'hi' });
+                    }}
+                    inputRef={getInputRef(pl.id, 'hi')}
+                    inputContainerStyle={{
+                      ...styles.inputContainerCompact,
+                      ...(isActive ? styles.activeInputRing : {}),
+                    }}
+                  />
+                  <FieldText
+                    label="Course Hcp (CH)"
                     value={pl.courseHandicap}
-                    onChangeText={(v) => setPlayers((prev) => prev.map((p) => (p.id === pl.id ? { ...p, courseHandicap: v } : p)))}
+                    onChangeText={(v) =>
+                      setPlayers((prev) => prev.map((p) => (p.id === pl.id ? { ...p, courseHandicap: v } : p)))
+                    }
                     keyboardType="number-pad"
-                    hint="e.g. 18"
+                    hint="e.g. 33"
                     enabled={isActive}
                     onRequestEnable={() => {
                       setActivePlayerId(pl.id);
                       setPendingFocus({ playerId: pl.id, field: 'hcp' });
                     }}
                     inputRef={getInputRef(pl.id, 'hcp')}
+                    inputContainerStyle={{
+                      ...styles.inputContainerCompact,
+                      ...(isActive ? styles.activeInputRing : {}),
+                    }}
                   />
                 </View>
 
                 <View style={styles.breakRow}>
                   <BreakItem
-                    label="Playing Hcp"
+                    label="Playing (PH)"
                     value={
                       Number.isFinite(parseInt(pl.courseHandicap, 10))
                         ? computePlayingHandicap(
@@ -994,19 +1203,76 @@ export default function LiveScoringScreen() {
         </Text>
       </ScrollView>
 
+      {/* Edit Hole Picker */}
+      {editHoleModalOpen ? (
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Edit hole</Text>
+            <Text style={styles.modalSub}>
+              Select a hole to correct. Previous holes are locked during normal scoring.
+            </Text>
+
+            <ScrollView style={{ maxHeight: 280 }} contentContainerStyle={{ paddingVertical: 6 }}>
+              {HOLES.map((h) => {
+                const isPast = h <= holeNumber; // only allow editing holes up to current progress
+                const isSelected = h === displayedHoleNumber;
+                const done = allPlayersFilledForHole(h);
+
+                return (
+                  <Pressable
+                    key={h}
+                    disabled={!isPast}
+                    onPress={() => { hapticTap(); setEditingHoleNumber(h); }}
+                    style={({ pressed }) => [
+                      styles.modalHoleRow,
+                      isSelected && styles.modalHoleRowActive,
+                      !isPast && styles.modalHoleRowDisabled,
+                      pressed && isPast && styles.btnPressed,
+                    ]}
+                  >
+                    <Text style={[styles.modalHoleText, isSelected && styles.modalHoleTextActive]}>
+                      Hole {h}
+                    </Text>
+                    <Text style={[styles.modalHoleMeta, done && styles.modalHoleMetaDone]}>
+                      {isPast ? (done ? 'Complete' : 'Not complete') : 'Locked'}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            <View style={styles.modalBtns}>
+              <Pressable
+                onPress={() => { hapticTap(); setEditHoleModalOpen(false); }}
+                style={({ pressed }) => [styles.modalBtn, pressed && styles.btnPressed]}
+              >
+                <Text style={styles.modalBtnText}>Close</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => { hapticTap(); setEditHoleModalOpen(false); }}
+                style={({ pressed }) => [styles.modalBtnPrimary, pressed && styles.btnPressed]}
+              >
+                <Text style={styles.modalBtnPrimaryText}>Start editing</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      ) : null}
+
       {Platform.OS === 'ios'
         ? players.map((pl) => (
             <GrossAccessoryBar
               key={pl.id}
               nativeID={getGrossAccessoryId(pl.id)}
-              holeComplete={holeComplete}
+              holeComplete={holeCompleteCurrent}
               onDone={() => {
                 hapticTap();
                 Keyboard.dismiss();
               }}
               onNextHole={() => {
                 hapticTap();
-                if (!holeComplete) return;
+                if (!holeCompleteCurrent) return;
                 if (holeNumber < 18) {
                   const nextHole = holeNumber + 1;
                   setHoleNumber(nextHole);
@@ -1120,11 +1386,26 @@ function getGrossVsParStyle(grossVsPar: number): { backgroundColor: string } {
   return { backgroundColor: colors.dangerSoft };
 }
 
-function BreakItem({ label, value, scoreVsParStyle }: { label: string; value: string; scoreVsParStyle?: { backgroundColor: string } }) {
+function BreakItem({
+  label,
+  value,
+  scoreVsParStyle,
+}: {
+  label: string;
+  value: string;
+  scoreVsParStyle?: { backgroundColor: string };
+}) {
   return (
     <View style={[styles.breakItem, scoreVsParStyle]}>
-      <Text style={styles.breakLabel}>{label}</Text>
-      <Text style={styles.breakValue}>{value}</Text>
+      <Text style={styles.breakLabel} numberOfLines={1} ellipsizeMode="tail">
+        {label}
+      </Text>
+
+      <View style={styles.breakValueWrap}>
+        <Text style={styles.breakValue} numberOfLines={1}>
+          {value}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -1288,6 +1569,22 @@ const styles = StyleSheet.create({
   holeChipText: { fontWeight: '900', color: colors.textPrimary },
   holeChipTextActive: { fontWeight: '900', color: colors.textInverse },
 
+  presetChips: { gap: 8, paddingVertical: 2, paddingRight: 6 },
+  presetChip: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: colors.card,
+  },
+  presetChipActive: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primary,
+  },
+  presetChipText: { fontWeight: '900', color: colors.textPrimary, fontSize: 12 },
+  presetChipTextActive: { fontWeight: '900', color: colors.textInverse, fontSize: 12 },
+
   lockedRow: { flexDirection: 'row', gap: 12, marginTop: 10, marginBottom: 6 },
   lockedBox: {
     flex: 1,
@@ -1300,7 +1597,7 @@ const styles = StyleSheet.create({
   lockedLabel: { fontSize: 11, color: '#666', fontWeight: '900' },
   lockedValue: { fontSize: 18, fontWeight: '900', marginTop: 4 },
 
-  row: { flexDirection: 'row', gap: 12 },
+  row: { flexDirection: 'row', gap: 12, marginTop: 8 },
   field: { flex: 1, marginBottom: 10 },
   label: { fontSize: 12, color: '#333', marginBottom: 6, fontWeight: '900' },
   input: {
@@ -1308,9 +1605,13 @@ const styles = StyleSheet.create({
     borderColor: '#ddd',
     borderRadius: 12,
     paddingHorizontal: 12,
-    paddingVertical: Platform.OS === 'ios' ? 12 : 10,
+    paddingVertical: Platform.OS === 'ios' ? 10 : 8,
     fontSize: 16,
     backgroundColor: '#fff',
+  },
+  inputContainerCompact: {
+    minHeight: 44,
+    paddingVertical: Platform.OS === 'ios' ? 8 : 6,
   },
   inputWrap: {
     position: 'relative',
@@ -1351,8 +1652,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 14,
-    padding: 12,
-    marginBottom: 10,
+    padding: 10,
+    marginBottom: 8,
     backgroundColor: colors.card,
   },
   playerCardActive: {
@@ -1369,29 +1670,101 @@ const styles = StyleSheet.create({
     },
     android: { elevation: 3 },
   }),
-  playerHeader: {
+  holeHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  editHoleBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.chip,
+  },
+  editHoleBtnText: { fontWeight: '900', fontSize: 12, color: colors.textPrimary },
+  editingBanner: {
+    marginTop: 10,
+    borderRadius: 12,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.primarySoft,
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
-    paddingBottom: 10,
+    justifyContent: 'space-between',
+  },
+  editingBannerText: { fontWeight: '900', color: colors.primary },
+  editingDoneBtn: {
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: colors.primary,
+  },
+  editingDoneBtnText: { color: colors.textInverse, fontWeight: '900' },
+
+  playerHeader: {
+    marginBottom: 6,
+    paddingBottom: 8,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(0,0,0,0.06)',
   },
+  playerHeaderTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  activePillChip: {
+    borderRadius: 999,
+    backgroundColor: colors.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  activePillText: { color: colors.textInverse, fontWeight: '900', fontSize: 11 },
+  holePillRow: { marginTop: 4, alignItems: 'center' },
+  pointsBadgeOff: { borderColor: '#D7D7D7', opacity: 0.75 },
+  pointsBadgeValueOff: { color: '#777' },
+  pointsBadgeLabelOff: { color: '#777' },
+
   playerHeaderLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    flex: 1,
   },
-  activePill: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
-    backgroundColor: colors.primary,
-    color: colors.textInverse,
+  playerMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 6,
+  },
+  playerIndex: {
+    fontSize: 12,
     fontWeight: '900',
+    color: '#666',
+  },
+  playerHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  holePill: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    backgroundColor: '#fff',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  holePillDone: {
+    backgroundColor: colors.successSoft,
+    borderColor: colors.success,
+  },
+  holePillText: {
     fontSize: 11,
-    overflow: 'hidden',
+    fontWeight: '900',
+    color: colors.textPrimary,
+  },
+  holePillTextDone: {
+    color: colors.success,
   },
   playerName: { fontSize: 16, fontWeight: '900' },
 
@@ -1400,25 +1773,97 @@ const styles = StyleSheet.create({
     borderColor: colors.primary,
     borderRadius: 999,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 6,
     alignItems: 'center',
-    minWidth: 66,
+    minWidth: 64,
   },
   pointsBadgeValue: { fontSize: 18, fontWeight: '900', lineHeight: 18 },
-  pointsBadgeLabel: { fontSize: 10, fontWeight: '900', color: colors.textPrimary, marginTop: 2 },
+  pointsBadgeLabel: { fontSize: 10, fontWeight: '900', color: colors.textPrimary, marginTop: 1 },
+
+  modalBackdrop: {
+    position: 'absolute',
+    left: 0, right: 0, top: 0, bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 18,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 480,
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  modalTitle: { fontSize: 16, fontWeight: '900', marginBottom: 6 },
+  modalSub: { fontSize: 12, color: '#666', marginBottom: 10, lineHeight: 17 },
+  modalHoleRow: {
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: '#fff',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  modalHoleRowActive: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+  modalHoleRowDisabled: { opacity: 0.45 },
+  modalHoleText: { fontWeight: '900', color: colors.textPrimary },
+  modalHoleTextActive: { color: colors.primary },
+  modalHoleMeta: { fontSize: 12, fontWeight: '800', color: '#777' },
+  modalHoleMetaDone: { color: colors.success },
+  modalBtns: { flexDirection: 'row', gap: 10, marginTop: 10 },
+  modalBtn: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.chip,
+  },
+  modalBtnText: { fontWeight: '900', color: colors.textPrimary },
+  modalBtnPrimary: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.primary,
+  },
+  modalBtnPrimaryText: { fontWeight: '900', color: colors.textInverse },
 
   breakRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     gap: 8,
     marginTop: 2,
-    paddingTop: 10,
+    paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: '#f0f0f0',
   },
-  breakItem: { flex: 1, alignItems: 'center', borderRadius: 8, paddingVertical: 4 },
+  breakItem: {
+    flex: 1,
+    alignItems: 'center',
+    borderRadius: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+    minHeight: 40,
+    justifyContent: 'space-between',
+  },
   breakLabel: { fontSize: 10, color: '#666', fontWeight: '900' },
-  breakValue: { fontSize: 13, color: '#111', fontWeight: '900', marginTop: 4 },
+  breakValueWrap: {
+    height: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  breakValue: { fontSize: 13, color: '#111', fontWeight: '900' },
 
   activeInputRing: {
     borderColor: colors.primary,

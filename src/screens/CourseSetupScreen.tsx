@@ -316,7 +316,9 @@ export default function CourseSetupScreen() {
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Saved courses</Text>
+          <View style={styles.cardTitleWrap}>
+            <Text style={styles.cardTitle}>Saved courses</Text>
+          </View>
           {savedCourses.length === 0 ? (
             <Text style={styles.savedEmpty}>No saved courses yet. Use Find course or save the current one.</Text>
           ) : (
@@ -397,7 +399,20 @@ export default function CourseSetupScreen() {
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Holes</Text>
+          <View style={styles.holesHeaderRow}>
+            <Text style={styles.cardTitle}>Holes</Text>
+            <Text style={styles.holesHelperText}>
+              {editingLocked ? 'Locked during live round' : 'Adjust Par / SI as required'}
+            </Text>
+          </View>
+
+          {editingLocked ? (
+            <View style={styles.lockBanner}>
+              <Text style={styles.lockBannerText}>
+                🔒 Par and Stroke Index are locked while a round is in progress.
+              </Text>
+            </View>
+          ) : null}
 
           <View style={styles.scorecardWrap}>
             <View style={[styles.scRow, styles.scHeaderRow]}>
@@ -488,7 +503,34 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     backgroundColor: colors.card,
   },
-  cardTitle: { fontSize: 16, fontWeight: '900', marginBottom: 10, color: colors.textPrimary },
+  cardTitle: { fontSize: 16, fontWeight: '900', marginBottom: 0, color: colors.textPrimary },
+  holesHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  holesHelperText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: colors.textSecondary,
+  },
+  lockBanner: {
+    marginBottom: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: colors.warningSoft,
+    borderWidth: 1,
+    borderColor: colors.warning,
+  },
+  lockBannerText: {
+    fontSize: 12,
+    fontWeight: '900',
+    color: colors.warning,
+    lineHeight: 16,
+  },
+  cardTitleWrap: { marginBottom: 10 },
 
   scorecardWrap: {
     borderWidth: 1,
