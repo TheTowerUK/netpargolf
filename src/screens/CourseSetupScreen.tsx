@@ -32,7 +32,7 @@ import {
   getCourseById,
   clearCourse,
 } from '../storage/courseStorage';
-import { loadRound, hasInProgressRound } from '../storage/roundStorage';
+import { loadCurrentRound, hasInProgressRound } from '../storage/roundStorage';
 import { hapticTap, hapticSuccess, hapticError } from '../utils/feedback';
 import { useToast } from '../components/Toast';
 import PrimaryButton from '../components/PrimaryButton';
@@ -48,20 +48,43 @@ export default function CourseSetupScreen() {
   const [saveBusy, setSaveBusy] = useState(false);
 
   const refreshData = useCallback(async () => {
-    const [list, activeId, round] = await Promise.all([listCourses(), getActiveCourseId(), loadRound()]);
-    setSavedCourses(list);
-    setActiveCourseIdState(activeId);
-    setRoundInProgress(hasInProgressRound(round));
-    const c = await loadActiveCourse();
-    setCourse(c ?? makeDefaultCourse());
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('timeout')), 2500)
+    );
+    try {
+      const work = async () => {
+        const [list, activeId, round] = await Promise.all([
+          listCourses(),
+          getActiveCourseId(),
+          loadCurrentRound(),
+        ]);
+        setSavedCourses(list);
+        setActiveCourseIdState(activeId);
+        setRoundInProgress(hasInProgressRound(round));
+        const c = await loadActiveCourse();
+        setCourse(c && c.holes?.length === 18 ? c : makeDefaultCourse());
+      };
+      await Promise.race([work(), timeoutPromise]);
+    } catch {
+      setSavedCourses([]);
+      setActiveCourseIdState(null);
+      setRoundInProgress(false);
+      setCourse(makeDefaultCourse());
+    }
   }, []);
 
   useFocusEffect(
     useCallback(() => {
       let mounted = true;
+      setLoading(true);
       (async () => {
-        await refreshData();
-        if (mounted) setLoading(false);
+        try {
+          await refreshData();
+        } catch {
+          if (mounted) setCourse(makeDefaultCourse());
+        } finally {
+          if (mounted) setLoading(false);
+        }
       })();
       return () => {
         mounted = false;
@@ -234,11 +257,38 @@ export default function CourseSetupScreen() {
     await refreshData();
   };
 
+  const onContinueToRoundSetup = async () => {
+    hapticTap();
+
+    if (!isValidCourse(course)) {
+      hapticError();
+      Alert.alert(
+        'Cannot continue',
+        'Please ensure you have 18 holes, Par is set, and Stroke Index uses 1–18 uniquely.'
+      );
+      return;
+    }
+
+    setSaveBusy(true);
+    try {
+      const id = await upsertCourse(course);
+      await setActiveCourseId(id);
+      hapticSuccess();
+      toast.show('Course saved', 'success');
+      navigation.navigate('RoundSetup');
+    } catch {
+      hapticError();
+      toast.show('Could not save course. Try again.', 'error');
+    } finally {
+      setSaveBusy(false);
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.container}>
         <Text style={styles.title}>Course Setup</Text>
-        <Text style={styles.muted}>Loading…</Text>
+        <Text style={styles.muted}>Loading course…</Text>
       </View>
     );
   }
@@ -251,6 +301,29 @@ export default function CourseSetupScreen() {
       <ScrollView contentContainerStyle={styles.container}>
         <Text style={styles.title}>Course Setup</Text>
         <Text style={styles.subTitle}>Set Par and Stroke Index for holes 1–18. This will lock Live Scoring.</Text>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Next step</Text>
+          <Text style={styles.muted}>
+            Save or confirm the course details here, then continue to Round Setup for competition and player details.
+          </Text>
+
+          <View style={styles.actionsRow}>
+            <PrimaryButton
+              title="Save Course"
+              onPress={onSave}
+              disabled={!courseValid || editingLocked}
+              loading={saveBusy}
+              variant="primary"
+            />
+            <PrimaryButton
+              title="Continue to Round Setup"
+              onPress={onContinueToRoundSetup}
+              disabled={!courseValid}
+              variant="secondary"
+            />
+          </View>
+        </View>
 
         <View style={styles.card}>
           <View style={styles.activeBanner}>

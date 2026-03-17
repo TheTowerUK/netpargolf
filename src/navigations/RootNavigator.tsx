@@ -7,6 +7,8 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
 import type { RootStackParamList } from './types';
 import HomeScreen from '../screens/HomeScreen';
+import RoundSetupScreen from '../screens/RoundSetupScreen';
+import RoundScoringScreen from '../screens/RoundScoringScreen';
 import HelpPracticeScreen from '../screens/HelpPracticeScreen';
 import CourseSetupScreen from '../screens/CourseSetupScreen';
 import CourseSearchScreen from '../screens/CourseSearchScreen';
@@ -23,6 +25,16 @@ export default function RootNavigator() {
     <NavigationContainer>
       <Stack.Navigator>
         <Stack.Screen name="Home" component={HomeScreen} options={{ title: 'NetParGolf' }} />
+        <Stack.Screen
+          name="RoundSetup"
+          component={RoundSetupScreen}
+          options={{ title: 'Round Setup' }}
+        />
+        <Stack.Screen
+          name="RoundScoring"
+          component={RoundScoringScreen}
+          options={{ title: 'Live Round' }}
+        />
         <Stack.Screen name="LiveScoring" component={LiveScoringScreen} options={{ title: 'Live Scoring' }} />
         <Stack.Screen name="Scoreboard" component={ScoreboardScreen} options={{ title: 'Scoreboard' }} />
         <Stack.Screen name="Scorecard" component={ScorecardScreen} options={{ title: 'Scorecard' }} />

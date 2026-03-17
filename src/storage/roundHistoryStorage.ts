@@ -3,7 +3,7 @@
 // Current in-progress round stays in netpargolf.round.v1.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { PersistedRoundV1 } from './roundStorage';
+import type { PersistedRound } from './roundStorage';
 
 const ROUNDS_KEY = 'netpargolf.rounds.v1';
 const HISTORY_KEY = 'netpargolf.roundHistory.v1';
@@ -14,7 +14,7 @@ export type StoredRound = {
   courseId: string | null;
   courseName: string;
   teamTotal: number | null;
-  round: PersistedRoundV1;
+  round: PersistedRound;
 };
 
 /** @deprecated Use StoredRound */
@@ -40,7 +40,7 @@ async function ensureMigrated(): Promise<void> {
         courseNameSnapshot?: string;
         teamTotalSnapshot?: number;
         playersSnapshot?: string[];
-        round: PersistedRoundV1;
+        round: PersistedRound;
       }>;
       if (Array.isArray(arr) && arr.length > 0) {
         const migratedList: StoredRoundEntry[] = arr.map((e) => ({
@@ -81,16 +81,17 @@ export async function listRounds(): Promise<StoredRound[]> {
 }
 
 export async function saveRoundToHistory(
-  round: PersistedRoundV1,
+  round: PersistedRound,
   courseId: string | null,
   courseName: string,
   teamTotal?: number | null
 ): Promise<string> {
   await ensureMigrated();
   const id = generateId();
+  const savedAt = new Date(round.updatedAt).getTime();
   const entry: StoredRoundEntry = {
     id,
-    savedAt: round.savedAt,
+    savedAt,
     courseId,
     courseName: courseName || 'Unknown',
     teamTotal: teamTotal ?? null,
@@ -109,7 +110,7 @@ export async function deleteRound(id: string): Promise<void> {
   await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(filtered));
 }
 
-export async function getRoundById(id: string): Promise<PersistedRoundV1 | null> {
+export async function getRoundById(id: string): Promise<PersistedRound | null> {
   const found = await getRoundEntryById(id);
   return found?.round ?? null;
 }

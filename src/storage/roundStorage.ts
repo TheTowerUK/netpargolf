@@ -1,74 +1,237 @@
 // src/storage/roundStorage.ts
-// NetParGolf — round persistence (AsyncStorage)
-// Stores the current in-progress round (players + holes gross + settings + current hole).
-
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
+export type RoundCompetition =
+  | 'individual_stableford'
+  | 'betterball'
+  | 'matchplay';
+
+export type RoundingMode = 'floor' | 'round' | 'ceil';
 
 export type PersistedPlayer = {
   id: string;
   name: string;
-  handicapIndex?: string;     // optional (e.g. "29.7") — UI/display for now
-  courseHandicap: string;     // CH as string to avoid input churn
-  allowancePercent?: string;  // deprecated: now at round level
+  handicapIndex: number | null;
+  courseHandicap: number | null;
 };
 
-export type PersistedHoleState = {
-  grossByPlayer: Record<string, string>; // playerId -> gross string
+export type PersistedHoleScore = {
+  holeNumber: number;
+  grossByPlayerId: Record<string, number | null>;
+  pointsByPlayerId?: Record<string, number | null>;
 };
 
-export type PersistedRoundV1 = {
-  version: 1;
-  savedAt: number; // Date.now()
-  holeNumber: number; // 1..18
-  bestN: 2 | 3 | 4;
-  roundingMode: 'nearest' | 'floor' | 'ceil';
-  allowancePercent: string; // round-level (%), e.g. "95"
+export type PersistedRound = {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
 
-  meta?: {
-    competitionName?: string;
-    competitionDate?: string; // YYYY-MM-DD
-    tee?: 'White' | 'Yellow' | 'Red' | 'Blue' | 'Winter';
-    marker?: string;
-  };
+  competition: RoundCompetition;
+  allowancePercent: number;
+  roundingMode: RoundingMode;
 
-  players: PersistedPlayer[]; // 4 players
-  holes: Record<number, PersistedHoleState>; // 1..18
+  players: PersistedPlayer[];
+  scores: PersistedHoleScore[];
+
+  currentHole: number;
+  isComplete?: boolean;
+  completedAt?: string | null;
 };
 
-const KEY = 'netpargolf.round.v1';
+const CURRENT_ROUND_KEY = '@netpargolf/current-round:v2';
 
-/** True if round exists and has at least one gross score or holeNumber > 1. */
-export function hasInProgressRound(round: PersistedRoundV1 | null): boolean {
-  if (!round) return false;
-  if (round.holeNumber > 1) return true;
-  const holes = round.holes;
-  if (!holes || typeof holes !== 'object') return false;
-  for (const h of Object.values(holes)) {
-    const gross = h?.grossByPlayer;
-    if (!gross || typeof gross !== 'object') continue;
-    for (const v of Object.values(gross)) {
-      if (v != null && String(v).trim() !== '') return true;
-    }
-  }
-  return false;
+function makeEmptyScores(players: PersistedPlayer[]): PersistedHoleScore[] {
+  return Array.from({ length: 18 }, (_, i) => ({
+    holeNumber: i + 1,
+    grossByPlayerId: Object.fromEntries(players.map((p) => [p.id, null])),
+    pointsByPlayerId: Object.fromEntries(players.map((p) => [p.id, null])),
+  }));
 }
 
-export async function loadRound(): Promise<PersistedRoundV1 | null> {
-  const raw = await AsyncStorage.getItem(KEY);
+function normalisePlayer(player: any): PersistedPlayer | null {
+  if (!player || typeof player !== 'object') return null;
+  if (!player.id || typeof player.id !== 'string') return null;
+
+  return {
+    id: player.id,
+    name: typeof player.name === 'string' ? player.name : '',
+    handicapIndex:
+      typeof player.handicapIndex === 'number' && Number.isFinite(player.handicapIndex)
+        ? player.handicapIndex
+        : null,
+    courseHandicap:
+      typeof player.courseHandicap === 'number' && Number.isFinite(player.courseHandicap)
+        ? player.courseHandicap
+        : null,
+  };
+}
+
+function normaliseRound(raw: any): PersistedRound | null {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const players: PersistedPlayer[] = Array.isArray(raw.players)
+    ? raw.players
+        .map(normalisePlayer)
+        .filter((p): p is PersistedPlayer => p !== null)
+    : [];
+
+  const rawScores: any[] = Array.isArray(raw.scores) ? raw.scores : [];
+
+  const scores: PersistedHoleScore[] = Array.from({ length: 18 }, (_, index) => {
+    const holeNumber = index + 1;
+    const existingHole = rawScores.find((s) => s?.holeNumber === holeNumber);
+
+    const grossByPlayerId: Record<string, number | null> = {};
+    const pointsByPlayerId: Record<string, number | null> = {};
+
+    for (const player of players) {
+      const value = existingHole?.grossByPlayerId?.[player.id];
+      grossByPlayerId[player.id] =
+        typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+      const points = existingHole?.pointsByPlayerId?.[player.id];
+      pointsByPlayerId[player.id] =
+        typeof points === 'number' && Number.isFinite(points) ? points : null;
+    }
+
+    return {
+      holeNumber,
+      grossByPlayerId,
+      pointsByPlayerId,
+    };
+  });
+
+  const competition: RoundCompetition =
+    raw.competition === 'betterball' || raw.competition === 'matchplay'
+      ? raw.competition
+      : 'individual_stableford';
+
+  const roundingMode: RoundingMode =
+    raw.roundingMode === 'floor' || raw.roundingMode === 'ceil'
+      ? raw.roundingMode
+      : 'round';
+
+  const allowancePercent =
+    typeof raw.allowancePercent === 'number' && Number.isFinite(raw.allowancePercent)
+      ? raw.allowancePercent
+      : 100;
+
+  const currentHole =
+    typeof raw.currentHole === 'number' &&
+    Number.isInteger(raw.currentHole) &&
+    raw.currentHole >= 1 &&
+    raw.currentHole <= 18
+      ? raw.currentHole
+      : 1;
+
+  const createdAt =
+    typeof raw.createdAt === 'string' && raw.createdAt.trim()
+      ? raw.createdAt
+      : new Date().toISOString();
+
+  const updatedAt =
+    typeof raw.updatedAt === 'string' && raw.updatedAt.trim()
+      ? raw.updatedAt
+      : new Date().toISOString();
+
+  return {
+    id:
+      typeof raw.id === 'string' && raw.id.trim()
+        ? raw.id
+        : `round-${Date.now()}`,
+    createdAt,
+    updatedAt,
+    competition,
+    allowancePercent,
+    roundingMode,
+    players,
+    scores,
+    currentHole,
+    isComplete: raw.isComplete === true,
+    completedAt:
+      typeof raw.completedAt === 'string' || raw.completedAt === null
+        ? raw.completedAt
+        : null,
+  };
+}
+
+export function buildInitialRound(params: {
+  competition: RoundCompetition;
+  allowancePercent: number;
+  roundingMode: RoundingMode;
+  players: PersistedPlayer[];
+}): PersistedRound {
+  const now = new Date().toISOString();
+
+  return {
+    id: `round-${Date.now()}`,
+    createdAt: now,
+    updatedAt: now,
+    competition: params.competition,
+    allowancePercent: params.allowancePercent,
+    roundingMode: params.roundingMode,
+    players: params.players,
+    scores: makeEmptyScores(params.players),
+    currentHole: 1,
+    isComplete: false,
+    completedAt: null,
+  };
+}
+
+export async function saveCurrentRound(round: PersistedRound): Promise<void> {
+  const normalised = normaliseRound(round);
+
+  if (!normalised) {
+    throw new Error('Unable to save invalid round data.');
+  }
+
+  const payload: PersistedRound = {
+    ...normalised,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await AsyncStorage.setItem(CURRENT_ROUND_KEY, JSON.stringify(payload));
+}
+
+export async function loadCurrentRound(): Promise<PersistedRound | null> {
+  const raw = await AsyncStorage.getItem(CURRENT_ROUND_KEY);
   if (!raw) return null;
+
   try {
-    const parsed = JSON.parse(raw) as PersistedRoundV1;
-    if (!parsed || parsed.version !== 1) return null;
-    return parsed;
+    const parsed = JSON.parse(raw);
+    const normalised = normaliseRound(parsed);
+    if (!normalised) return null;
+
+    const needsRewrite = JSON.stringify(parsed) !== JSON.stringify(normalised);
+    if (needsRewrite) {
+      await AsyncStorage.setItem(CURRENT_ROUND_KEY, JSON.stringify(normalised));
+    }
+
+    return normalised;
   } catch {
     return null;
   }
 }
 
-export async function saveRound(data: PersistedRoundV1): Promise<void> {
-  await AsyncStorage.setItem(KEY, JSON.stringify(data));
+export async function clearCurrentRound(): Promise<void> {
+  await AsyncStorage.removeItem(CURRENT_ROUND_KEY);
 }
 
-export async function clearRound(): Promise<void> {
-  await AsyncStorage.removeItem(KEY);
+export function hasInProgressRound(round: PersistedRound | null): boolean {
+  return !!round && !round.isComplete;
+}
+
+export async function markCurrentRoundComplete(): Promise<PersistedRound | null> {
+  const round = await loadCurrentRound();
+  if (!round) return null;
+
+  const completed: PersistedRound = {
+    ...round,
+    isComplete: true,
+    completedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  await AsyncStorage.setItem(CURRENT_ROUND_KEY, JSON.stringify(completed));
+  return completed;
 }

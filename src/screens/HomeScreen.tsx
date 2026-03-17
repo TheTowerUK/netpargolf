@@ -3,12 +3,12 @@
 // If you already have your own HomeScreen, just merge the new button.
 
 import React, { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { hapticTap } from '../utils/feedback';
 import PrimaryButton from '../components/PrimaryButton';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigations/types';
-import { loadRound } from '../storage/roundStorage';
+import { loadCurrentRound } from '../storage/roundStorage';
 import { colors } from '../theme/colors';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
@@ -18,10 +18,15 @@ export default function HomeScreen({ navigation }: Props) {
 
   useEffect(() => {
     (async () => {
-      const r = await loadRound();
+      const r = await loadCurrentRound();
       setHasSavedRound(!!r);
     })();
   }, []);
+
+  const onLiveScoring = () => {
+    hapticTap();
+    navigation.navigate('RoundSetup');
+  };
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -52,7 +57,7 @@ export default function HomeScreen({ navigation }: Props) {
 
         <PrimaryButton
           title="Live Scoring (4 players)"
-          onPress={() => navigation.navigate('LiveScoring')}
+          onPress={onLiveScoring}
           variant="primary"
         />
 

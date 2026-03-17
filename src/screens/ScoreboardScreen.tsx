@@ -3,12 +3,13 @@
 // Also offers "Continue round" and "Clear saved round".
 // Supports viewing historical rounds via roundId param.
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import type { RootStackParamList } from '../navigations/types';
-import { loadRound, clearRound, type PersistedRoundV1 } from '../storage/roundStorage';
+import { loadCurrentRound, clearCurrentRound, type PersistedRound } from '../storage/roundStorage';
+import { mapPersistedRoundToScoreboard } from '../core/roundMapper';
 import { loadCourse, getActiveCourseId } from '../storage/courseStorage';
 import { getRoundById, saveRoundToHistory } from '../storage/roundHistoryStorage';
 import type { Course } from '../core/course';
@@ -24,30 +25,45 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
   const toast = useToast();
   const viewingHistory = !!route.params?.roundId;
 
-  const [round, setRound] = useState<PersistedRoundV1 | null>(null);
+  const [activeRound, setActiveRound] = useState<PersistedRound | null>(null);
   const [course, setCourse] = useState<Course | null>(null);
   const [loading, setLoading] = useState(true);
   const [archiveBusy, setArchiveBusy] = useState(false);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     setLoading(true);
     try {
       const roundId = route.params?.roundId;
-      const rPromise = roundId ? getRoundById(roundId) : loadRound();
-      const [r, c] = await Promise.all([rPromise, loadCourse()]);
-      setRound(r);
-      setCourse(c);
+      const roundPromise = roundId ? getRoundById(roundId) : loadCurrentRound();
+      const [loadedRound, loadedCourse] = await Promise.all([roundPromise, loadCourse()]);
+      setActiveRound(loadedRound);
+      setCourse(loadedCourse);
     } finally {
       setLoading(false);
     }
-  };
+  }, [route.params?.roundId]);
 
   useEffect(() => {
     void refresh();
-  }, [route.params?.roundId]);
+  }, [refresh]);
+
+  const mappedRound = useMemo(() => {
+    if (!activeRound) return null;
+    return mapPersistedRoundToScoreboard(activeRound);
+  }, [activeRound]);
+
+  const round = mappedRound;
+
+  const competitionLabel = useMemo(() => {
+    if (!round?.competition) return '—';
+    return round.competition.replaceAll('_', ' ');
+  }, [round]);
 
   const summary = useMemo(() => {
-    if (!round) return null;
+    if (!round || !course?.holes?.length) return null;
+
+    const scoringRoundingMode = round.roundingMode === 'round' ? 'nearest' : round.roundingMode;
+    const holeMap = Object.fromEntries(round.holes.map((h) => [h.holeNumber, h]));
 
     const players = round.players.map((p) => ({
       id: p.id,
@@ -61,48 +77,55 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
     let teamTotal = 0;
 
     for (let h = 1; h <= 18; h++) {
-      const holeState = round.holes[h];
-      if (!holeState) continue;
+      const holeData = holeMap[h];
+      if (!holeData) continue;
 
-      const par = course?.holes?.[h - 1]?.par;
-      const si = course?.holes?.[h - 1]?.strokeIndex;
+      const par = course.holes[h - 1]?.par;
+      const si = course.holes[h - 1]?.strokeIndex;
 
       if (!Number.isFinite(par) || !Number.isFinite(si)) continue;
 
       const holePoints: number[] = [];
 
       round.players.forEach((p, idx) => {
-        const grossStr = holeState.grossByPlayer[p.id];
-        const gross = parseInt(grossStr ?? '', 10);
-        const ch = parseInt(p.courseHandicap ?? '', 10);
-        const pct = parseFloat(round.allowancePercent ?? p.allowancePercent ?? '100');
+        const gross = holeData.grossByPlayerId[p.id];
+        const ch = p.courseHandicap;
+        const pct = round.allowancePercent;
 
-        if (!Number.isFinite(gross) || !Number.isFinite(ch) || !Number.isFinite(pct)) return;
+        if (
+          gross == null ||
+          !Number.isFinite(gross) ||
+          ch == null ||
+          !Number.isFinite(ch) ||
+          !Number.isFinite(pct)
+        ) {
+          return;
+        }
 
-        const playingHcp = computePlayingHandicap(ch, pct, round.roundingMode ?? 'nearest');
+        const playingHcp = computePlayingHandicap(ch, pct, scoringRoundingMode);
 
         try {
-          const b = scoreHoleOptionA({
+          const scored = scoreHoleOptionA({
             courseHandicap: playingHcp,
             allowancePercent: 1,
-            roundingMode: round.roundingMode,
+            roundingMode: scoringRoundingMode,
             hole: { par: par as number, strokeIndex: si as number },
             gross,
           });
 
           players[idx].gross += gross;
-          players[idx].net += b.net;
-          players[idx].points += b.points;
+          players[idx].net += scored.net;
+          players[idx].points += scored.points;
           players[idx].holesScored += 1;
 
-          holePoints.push(b.points);
+          holePoints.push(scored.points);
         } catch {
-          // skip invalid hole/player combo
+          // Ignore invalid player/hole combinations
         }
       });
 
       if (holePoints.length) {
-        teamTotal += sumBestN(holePoints, Math.min(round.bestN, holePoints.length));
+        teamTotal += sumBestN(holePoints, Math.min(4, holePoints.length));
       }
     }
 
@@ -110,29 +133,40 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
   }, [round, course]);
 
   const onContinue = () => {
-    navigation.navigate('LiveScoring');
+    if (!course) {
+      Alert.alert('No course', 'Course data is missing. Set up a course first.', [{ text: 'OK' }]);
+      return;
+    }
+
+    navigation.navigate('RoundScoring');
   };
 
   const onArchive = async () => {
-    if (!round) return;
+    if (!activeRound) return;
 
     hapticTap();
     setArchiveBusy(true);
+
     try {
       const courseId = await getActiveCourseId();
       const courseName = course?.name ?? 'No course selected';
-      await saveRoundToHistory(round, courseId, courseName, summary?.teamTotal ?? null);
 
-      await clearRound();
+      await saveRoundToHistory(activeRound, courseId, courseName, summary?.teamTotal ?? null);
+      await clearCurrentRound();
+
       hapticSuccess();
       toast.show('Archived to History', 'success');
       await refresh();
-    } catch (e) {
+    } catch {
       hapticError();
       toast.show('Could not archive. Try again.', 'error');
     } finally {
       setArchiveBusy(false);
     }
+  };
+
+  const handleReturnHome = () => {
+    navigation.navigate('Home');
   };
 
   const onClear = async () => {
@@ -147,11 +181,11 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
           onPress: async () => {
             hapticTap();
             try {
-              await clearRound();
+              await clearCurrentRound();
               hapticSuccess();
               toast.show('Cleared', 'success');
               await refresh();
-            } catch (e) {
+            } catch {
               hapticError();
               toast.show('Could not clear. Try again.', 'error');
             }
@@ -177,19 +211,61 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
       {!loading && round ? (
         <>
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Round status</Text>
+            <Text style={styles.cardTitle}>{viewingHistory ? 'Historical round' : 'Round status'}</Text>
+
             <Row label="Course" value={course?.name ?? '— (save a course)'} />
-            <Row label="Current hole" value={`${round.holeNumber}`} />
-            <Row label="Team rule" value={round.bestN === 4 ? 'All 4' : `Best ${round.bestN}`} />
+            <Row label="Competition" value={competitionLabel} />
+            <Row label="Allowance" value={`${round.allowancePercent}%`} />
             <Row label="Rounding" value={round.roundingMode} />
-            <Row label="Last saved" value={new Date(round.savedAt).toLocaleString()} />
+
+            {!viewingHistory ? <Row label="Current hole" value={`${round.currentHole}`} /> : null}
+
+            <Row
+              label={viewingHistory ? 'Saved' : 'Last saved'}
+              value={activeRound ? new Date(activeRound.updatedAt).toLocaleString() : '—'}
+            />
+
             {!viewingHistory ? (
-              <View style={styles.actionsRow}>
-                <PrimaryButton title="Continue round" onPress={onContinue} variant="primary" style={styles.btnFlex} />
-                <PrimaryButton title="Refresh" onPress={() => { refresh(); toast.show('Updated', 'success', 900); }} variant="secondary" style={styles.btnFlex} />
-              </View>
+              !activeRound?.isComplete ? (
+                <View style={styles.actionsRow}>
+                  <PrimaryButton
+                    title="Continue round"
+                    onPress={onContinue}
+                    variant="primary"
+                    style={styles.btnFlex}
+                  />
+                  <PrimaryButton
+                    title="Refresh"
+                    onPress={() => {
+                      void refresh();
+                      toast.show('Updated', 'success', 900);
+                    }}
+                    variant="secondary"
+                    style={styles.btnFlex}
+                  />
+                </View>
+              ) : (
+                <View style={styles.actionsRow}>
+                  <PrimaryButton
+                    title="Start New Round"
+                    onPress={() => navigation.navigate('RoundSetup')}
+                    variant="primary"
+                    style={styles.btnFlex}
+                  />
+                  <PrimaryButton
+                    title="Return Home"
+                    onPress={handleReturnHome}
+                    variant="secondary"
+                    style={styles.btnFlex}
+                  />
+                </View>
+              )
             ) : (
-              <PrimaryButton title="Back to history" onPress={() => navigation.navigate('RoundHistory')} variant="secondary" />
+              <PrimaryButton
+                title="Back to history"
+                onPress={() => navigation.navigate('RoundHistory')}
+                variant="secondary"
+              />
             )}
           </View>
 
@@ -212,6 +288,7 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
                     <Text style={styles.summaryVal}>{p.points} pts</Text>
                   </View>
                 ))}
+
                 <Text style={styles.teamTotal}>
                   Team total: <Text style={styles.teamTotalValue}>{summary.teamTotal}</Text>
                 </Text>
@@ -222,7 +299,7 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
 
             {!viewingHistory ? (
               <>
-                <View style={{ height: 10 }} />
+                <View style={styles.spacerMd} />
 
                 <PrimaryButton
                   title="Archive to History"
@@ -233,7 +310,7 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
                   accessibilityHint="Moves this round into your round history"
                 />
 
-                <View style={{ height: 8 }} />
+                <View style={styles.spacerSm} />
 
                 <PrimaryButton
                   title="Clear saved round"
@@ -244,6 +321,38 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
                 />
               </>
             ) : null}
+          </View>
+
+          <View style={styles.actionRow}>
+            {activeRound?.isComplete ? (
+              <>
+                <Pressable
+                  style={styles.secondaryBtn}
+                  onPress={() => navigation.navigate('RoundSetup')}
+                >
+                  <Text style={styles.secondaryBtnText}>Start New Round</Text>
+                </Pressable>
+                <Pressable style={styles.primaryBtn} onPress={handleReturnHome}>
+                  <Text style={styles.primaryBtnText}>Return Home</Text>
+                </Pressable>
+              </>
+            ) : !viewingHistory ? (
+              <>
+                <Pressable
+                  style={styles.secondaryBtn}
+                  onPress={() => navigation.navigate('RoundScoring')}
+                >
+                  <Text style={styles.secondaryBtnText}>Back to Live Scoring</Text>
+                </Pressable>
+                <Pressable style={styles.primaryBtn} onPress={handleReturnHome}>
+                  <Text style={styles.primaryBtnText}>Return Home</Text>
+                </Pressable>
+              </>
+            ) : (
+              <Pressable style={styles.primaryBtn} onPress={handleReturnHome}>
+                <Text style={styles.primaryBtnText}>Return Home</Text>
+              </Pressable>
+            )}
           </View>
         </>
       ) : null}
@@ -261,14 +370,22 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 16, paddingBottom: 28, backgroundColor: colors.background },
+  container: {
+    padding: 16,
+    paddingBottom: 28,
+    backgroundColor: colors.background,
+  },
+
   title: {
     fontSize: 26,
     fontWeight: '900',
     marginBottom: 12,
     color: colors.primary,
   },
-  muted: { color: colors.textSecondary },
+
+  muted: {
+    color: colors.textSecondary,
+  },
 
   card: {
     borderWidth: 1,
@@ -278,31 +395,118 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     backgroundColor: colors.card,
   },
-  cardTitle: { fontSize: 16, fontWeight: '900', marginBottom: 10 },
 
-  row: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8, gap: 10 },
-  rowLabel: { color: colors.textSecondary, fontWeight: '800', flex: 1 },
-  rowValue: { color: colors.textPrimary, fontWeight: '900', textAlign: 'right' },
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+    marginBottom: 10,
+    color: colors.textPrimary,
+  },
 
-  actionsRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
-  btnFlex: { flex: 1 },
-  primaryBtn: { flex: 1, backgroundColor: colors.primary, borderRadius: 14, paddingVertical: 12, alignItems: 'center' },
-  primaryBtnText: { color: colors.textInverse, fontWeight: '900' },
-  secondaryBtn: { flex: 1, backgroundColor: colors.primarySoft, borderRadius: 14, paddingVertical: 12, alignItems: 'center' },
-  secondaryBtnText: { color: colors.textPrimary, fontWeight: '900' },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+    gap: 10,
+  },
 
-  warn: { color: colors.warning, fontWeight: '900', marginBottom: 10 },
+  rowLabel: {
+    color: colors.textSecondary,
+    fontWeight: '800',
+    flex: 1,
+  },
 
-  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  summaryName: { flex: 1, fontWeight: '900' },
-  summaryVal: { width: 72, textAlign: 'right', fontWeight: '800' },
+  rowValue: {
+    color: colors.textPrimary,
+    fontWeight: '900',
+    textAlign: 'right',
+  },
 
-  teamTotal: { marginTop: 10, fontSize: 16, fontWeight: '900', textAlign: 'right' },
-  teamTotalValue: { fontSize: 20 },
+  actionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+  },
 
-  archiveBtn: { backgroundColor: colors.primary, borderRadius: 14, paddingVertical: 12, alignItems: 'center' },
-  archiveBtnText: { color: colors.textInverse, fontWeight: '900' },
+  btnFlex: {
+    flex: 1,
+  },
 
-  dangerBtn: { backgroundColor: colors.danger, borderRadius: 14, paddingVertical: 12, alignItems: 'center' },
-  dangerBtnText: { color: colors.textInverse, fontWeight: '900' },
+  warn: {
+    color: colors.warning,
+    fontWeight: '900',
+    marginBottom: 10,
+  },
+
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+
+  summaryName: {
+    flex: 1,
+    fontWeight: '900',
+    color: colors.textPrimary,
+  },
+
+  summaryVal: {
+    width: 72,
+    textAlign: 'right',
+    fontWeight: '800',
+    color: colors.textPrimary,
+  },
+
+  teamTotal: {
+    marginTop: 10,
+    fontSize: 16,
+    fontWeight: '900',
+    textAlign: 'right',
+    color: colors.textPrimary,
+  },
+
+  teamTotalValue: {
+    fontSize: 20,
+  },
+
+  spacerMd: {
+    height: 10,
+  },
+
+  spacerSm: {
+    height: 8,
+  },
+
+  actionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  secondaryBtn: {
+    flex: 1,
+    backgroundColor: colors.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: 15,
+    alignItems: 'center',
+  },
+  secondaryBtnText: {
+    color: colors.textPrimary,
+    fontWeight: '800',
+    fontSize: 16,
+  },
+  primaryBtn: {
+    flex: 1,
+    backgroundColor: colors.primary,
+    borderRadius: 14,
+    paddingVertical: 15,
+    alignItems: 'center',
+  },
+  primaryBtnText: {
+    color: '#ffffff',
+    fontWeight: '800',
+    fontSize: 16,
+  },
 });
