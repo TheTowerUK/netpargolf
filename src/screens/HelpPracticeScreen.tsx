@@ -12,8 +12,12 @@ import {
   AccessibilityInfo,
 } from 'react-native';
 
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../navigations/types';
 import { colors as theme } from '../theme/colors';
 import { hapticTap, hapticLight } from '../utils/feedback';
+
+type Props = NativeStackScreenProps<RootStackParamList, 'HelpPractice'>;
 
 type TabKey = 'stableford' | 'matchplay';
 
@@ -40,7 +44,7 @@ function formatDelta(delta: number) {
   return `${delta}`;
 }
 
-export default function HelpPracticeScreen() {
+export default function HelpPracticeScreen({ navigation }: Props) {
   const [tab, setTab] = useState<TabKey>('stableford');
   const [reduceMotion, setReduceMotion] = useState(false);
 
@@ -331,6 +335,11 @@ export default function HelpPracticeScreen() {
           </>
         )}
 
+        <Spacer h={18} />
+
+        <FourBallHandicapsSection />
+
+        <Spacer h={18} />
         <FooterNote />
       </ScrollView>
     </View>
@@ -695,6 +704,115 @@ function ExampleTableMatchPlay({
         </Text>
       </View>
     </View>
+  );
+}
+
+function FourBallHandicapsSection() {
+  return (
+    <>
+      <SectionTitle
+        title="Four-ball formats"
+        subtitle="How handicaps differ between Four-Ball Stroke Play and Four-Ball Match Play."
+      />
+
+      <Card>
+        <Text style={styles.h3}>Four-Ball Stroke Play</Text>
+        <Text style={styles.body}>
+          In this format (often called better-ball stableford or four-ball stroke play), each
+          partner plays their own ball. Your team score on a hole usually comes from the better
+          of the two results — but each golfer still has their own handicap for the day.
+        </Text>
+
+        <Spacer h={10} />
+
+        <Bullet text="Each player receives a Playing Handicap." />
+        <Bullet text="It is worked out from their own Course Handicap (from Handicap Index and the tee you selected)." />
+        <Bullet text="The allowance is often 85% in competition; NetParGolf defaults to that for this format, and you can change it in Round Setup if needed." />
+        <Bullet text="The app calculates Playing Handicap automatically — you do not type it in by hand." />
+
+        <Spacer h={10} />
+
+        <Text style={styles.note}>
+          Use <Text style={styles.bold}>Four-Ball Stroke Play</Text> in Round Setup when you are
+          playing stableford or stroke play as partners.
+        </Text>
+      </Card>
+
+      <Spacer h={12} />
+
+      <Card>
+        <Text style={styles.h3}>Four-Ball Match Play</Text>
+        <Text style={styles.body}>
+          In four-ball match play, handicaps are not applied the same way as in stroke play. The
+          field finds the lowest Course Handicap; that golfer is the scratch marker for the group.
+          Everyone else gets a share of the difference.
+        </Text>
+
+        <Spacer h={10} />
+
+        <Bullet text="The lowest Course Handicap in the field plays off 0 match strokes." />
+        <Bullet text="Every other player gets a percentage (often 90%) of the difference between their raw Course Handicap and that lowest value." />
+        <Bullet text="Those values are worked out before rounding, then match strokes are rounded using your chosen rounding mode." />
+
+        <Spacer h={10} />
+
+        <Text style={styles.note}>
+          So someone with a high Handicap Index and Course Handicap (e.g. HI 31.8 → Course
+          Handicap 36) with 90% allowance might still show{' '}
+          <Text style={styles.bold}>only 24 match strokes</Text> if the lowest player in the field
+          is much lower — because match strokes are based on the{' '}
+          <Text style={styles.bold}>gap</Text> from the lowest player, not the full 36 on its own.
+        </Text>
+
+        <Spacer h={12} />
+
+        <Text style={styles.h3}>Example</Text>
+        <Text style={styles.body}>
+          Suppose the lowest Course Handicap in the group is 9 and another player is 36:
+        </Text>
+
+        <Spacer h={10} />
+
+        <View style={styles.table}>
+          <View style={[styles.tableRow, styles.tableHeader]}>
+            <Text style={[styles.th, { flex: 1 }]}>Step</Text>
+            <Text style={[styles.th, { width: 88, textAlign: 'right' }]}>Value</Text>
+          </View>
+          <View style={styles.tableRow}>
+            <Text style={[styles.td, { flex: 1 }]}>Lowest Course Handicap</Text>
+            <Text style={[styles.td, { width: 88, textAlign: 'right' }]}>9</Text>
+          </View>
+          <View style={styles.tableRow}>
+            <Text style={[styles.td, { flex: 1 }]}>Other player Course Handicap</Text>
+            <Text style={[styles.td, { width: 88, textAlign: 'right' }]}>36</Text>
+          </View>
+          <View style={styles.tableRow}>
+            <Text style={[styles.td, { flex: 1 }]}>Difference</Text>
+            <Text style={[styles.td, { width: 88, textAlign: 'right' }]}>27</Text>
+          </View>
+          <View style={styles.tableRow}>
+            <Text style={[styles.td, { flex: 1 }]}>90% of difference</Text>
+            <Text style={[styles.td, { width: 88, textAlign: 'right' }]}>24.3</Text>
+          </View>
+          <View style={styles.tableRow}>
+            <Text style={[styles.td, { flex: 1 }]}>Rounded → match strokes</Text>
+            <Text style={[styles.td, { width: 88, textAlign: 'right' }, styles.bold]}>24</Text>
+          </View>
+        </View>
+
+        <Spacer h={10} />
+
+        <View style={styles.callout}>
+          <Text style={styles.calloutTitle}>In the app</Text>
+          <Text style={styles.body}>
+            Choose <Text style={styles.bold}>Four-Ball Match Play</Text> in Round Setup for this
+            logic. You will see <Text style={styles.bold}>Match strokes</Text> (not Playing
+            Handicap) on each player. The lowest Course Handicap player is labelled as playing off
+            scratch.
+          </Text>
+        </View>
+      </Card>
+    </>
   );
 }
 

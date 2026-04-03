@@ -20,7 +20,9 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import type { RootStackParamList } from '../navigations/types';
 import { colors } from '../theme/colors';
-import { makeDefaultCourse, isValidCourse, type Course } from '../core/course';
+import { makeDefaultCourse, isValidCourse, type Course, type CourseTee } from '../core/course';
+import { hasMissingStrokeIndex } from '../utils/courseValidation';
+import StrokeIndexWarningBanner from '../components/StrokeIndexWarningBanner';
 import {
   loadActiveCourse,
   listCourses,
@@ -47,6 +49,50 @@ export default function CourseSetupScreen() {
   const [roundInProgress, setRoundInProgress] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
 
+  const DEFAULT_TEES: CourseTee[] = [
+    { name: 'White', par: 72, courseRating: 72, slopeRating: 113 },
+    { name: 'Yellow', par: 72, courseRating: 72, slopeRating: 113 },
+    { name: 'Red', par: 72, courseRating: 72, slopeRating: 113 },
+  ];
+
+  function withDefaultTees(next: Course): Course {
+    if (Array.isArray(next.tees) && next.tees.length > 0) return next;
+    return { ...next, tees: DEFAULT_TEES };
+  }
+
+  function validateTees(tees: CourseTee[]): string | null {
+    if (!tees.length) return 'Add at least one tee.';
+    for (const tee of tees) {
+      if (!Number.isFinite(tee.par) || tee.par < 54 || tee.par > 90) {
+        return `${tee.name}: invalid par`;
+      }
+      if (!Number.isFinite(tee.courseRating) || tee.courseRating <= 0) {
+        return `${tee.name}: invalid course rating`;
+      }
+      if (!Number.isFinite(tee.slopeRating) || tee.slopeRating < 55 || tee.slopeRating > 155) {
+        return `${tee.name}: invalid slope rating`;
+      }
+    }
+    return null;
+  }
+
+  function updateTeeField(teeName: CourseTee['name'], field: 'par' | 'courseRating' | 'slopeRating', raw: string) {
+    const asNumber = Number(raw.replace(',', '.'));
+    const nextValue = Number.isFinite(asNumber) ? asNumber : 0;
+
+    setCourse((prev) => ({
+      ...prev,
+      tees: (prev.tees ?? DEFAULT_TEES).map((tee) =>
+        tee.name === teeName
+          ? {
+              ...tee,
+              [field]: field === 'courseRating' ? nextValue : Math.round(nextValue),
+            }
+          : tee
+      ),
+    }));
+  }
+
   const refreshData = useCallback(async () => {
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('timeout')), 2500)
@@ -62,7 +108,7 @@ export default function CourseSetupScreen() {
         setActiveCourseIdState(activeId);
         setRoundInProgress(hasInProgressRound(round));
         const c = await loadActiveCourse();
-        setCourse(c && c.holes?.length === 18 ? c : makeDefaultCourse());
+        setCourse(c && c.holes?.length === 18 ? withDefaultTees(c) : makeDefaultCourse());
       };
       await Promise.race([work(), timeoutPromise]);
     } catch {
@@ -120,7 +166,8 @@ export default function CourseSetupScreen() {
     return { isSiInvalid, siDuplicateWarning: warning };
   }, [course]);
 
-  const courseValid = isValidCourse(course);
+  const teeValidationError = useMemo(() => validateTees(course.tees ?? []), [course.tees]);
+  const courseValid = isValidCourse(course) && !teeValidationError;
   const editingActiveCourse = activeCourseId != null && course.id === activeCourseId;
   const editingLocked = roundInProgress && editingActiveCourse;
 
@@ -134,18 +181,19 @@ export default function CourseSetupScreen() {
   };
 
   const onSave = async () => {
-    if (!isValidCourse(course)) {
+    if (!isValidCourse(course) || teeValidationError) {
       hapticError();
       Alert.alert(
         'Cannot save course',
-        'Please ensure you have 18 holes, Par is set, and Stroke Index uses 1–18 uniquely.'
+        teeValidationError ??
+          'Please ensure you have 18 holes, Par is set, and Stroke Index uses 1–18 uniquely.'
       );
       return;
     }
     hapticTap();
     setSaveBusy(true);
     try {
-      const id = await upsertCourse(course);
+      const id = await upsertCourse(withDefaultTees(course));
       await setActiveCourseId(id);
       await refreshData();
       hapticSuccess();
@@ -260,18 +308,19 @@ export default function CourseSetupScreen() {
   const onContinueToRoundSetup = async () => {
     hapticTap();
 
-    if (!isValidCourse(course)) {
+    if (!isValidCourse(course) || teeValidationError) {
       hapticError();
       Alert.alert(
         'Cannot continue',
-        'Please ensure you have 18 holes, Par is set, and Stroke Index uses 1–18 uniquely.'
+        teeValidationError ??
+          'Please ensure you have 18 holes, Par is set, and Stroke Index uses 1–18 uniquely.'
       );
       return;
     }
 
     setSaveBusy(true);
     try {
-      const id = await upsertCourse(course);
+      const id = await upsertCourse(withDefaultTees(course));
       await setActiveCourseId(id);
       hapticSuccess();
       toast.show('Course saved', 'success');
@@ -301,6 +350,8 @@ export default function CourseSetupScreen() {
       <ScrollView contentContainerStyle={styles.container}>
         <Text style={styles.title}>Course Setup</Text>
         <Text style={styles.subTitle}>Set Par and Stroke Index for holes 1–18. This will lock Live Scoring.</Text>
+
+        {hasMissingStrokeIndex(course) && <StrokeIndexWarningBanner />}
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Next step</Text>
@@ -367,6 +418,55 @@ export default function CourseSetupScreen() {
             placeholderTextColor="#999"
             editable={!editingLocked}
           />
+
+          <Text style={[styles.label, { marginTop: 12 }]}>Tee ratings</Text>
+          <Text style={styles.hint}>
+            Tee-level Par, Course Rating and Slope Rating are used for automatic handicap conversion.
+          </Text>
+          {(course.tees ?? DEFAULT_TEES).map((tee) => (
+            <View key={tee.name} style={styles.teeEditorCard}>
+              <Text style={styles.teeEditorTitle}>{tee.name}</Text>
+              <View style={styles.teeEditorRow}>
+                <View style={styles.teeEditorField}>
+                  <Text style={styles.teeFieldLabel}>Par</Text>
+                  <TextInput
+                    value={String(tee.par)}
+                    onChangeText={(v) => updateTeeField(tee.name, 'par', v)}
+                    keyboardType="number-pad"
+                    style={[styles.input, editingLocked && styles.inputDisabled]}
+                    editable={!editingLocked}
+                    placeholder="72"
+                    placeholderTextColor="#999"
+                  />
+                </View>
+                <View style={styles.teeEditorField}>
+                  <Text style={styles.teeFieldLabel}>Course Rating</Text>
+                  <TextInput
+                    value={String(tee.courseRating)}
+                    onChangeText={(v) => updateTeeField(tee.name, 'courseRating', v)}
+                    keyboardType="decimal-pad"
+                    style={[styles.input, editingLocked && styles.inputDisabled]}
+                    editable={!editingLocked}
+                    placeholder="72.1"
+                    placeholderTextColor="#999"
+                  />
+                </View>
+                <View style={styles.teeEditorField}>
+                  <Text style={styles.teeFieldLabel}>Slope Rating</Text>
+                  <TextInput
+                    value={String(tee.slopeRating)}
+                    onChangeText={(v) => updateTeeField(tee.name, 'slopeRating', v)}
+                    keyboardType="number-pad"
+                    style={[styles.input, editingLocked && styles.inputDisabled]}
+                    editable={!editingLocked}
+                    placeholder="113"
+                    placeholderTextColor="#999"
+                  />
+                </View>
+              </View>
+            </View>
+          ))}
+          {teeValidationError ? <Text style={styles.warning}>{teeValidationError}</Text> : null}
 
           {siDuplicateWarning ? (
             <>
@@ -724,6 +824,18 @@ const styles = StyleSheet.create({
   label: { fontSize: 12, fontWeight: '900', marginBottom: 6, color: colors.textPrimary },
   inputDisabled: { backgroundColor: colors.chip, opacity: 0.8 },
   input: { borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 10, fontSize: 16, color: colors.textPrimary },
+  teeEditorCard: {
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    padding: 10,
+    backgroundColor: colors.background,
+  },
+  teeEditorTitle: { fontSize: 13, fontWeight: '900', color: colors.textPrimary, marginBottom: 8 },
+  teeEditorRow: { flexDirection: 'row', gap: 8 },
+  teeEditorField: { flex: 1 },
+  teeFieldLabel: { fontSize: 11, color: colors.textSecondary, fontWeight: '700', marginBottom: 4 },
 
   hint: { marginTop: 8, fontSize: 12, color: colors.textSecondary },
   warning: { marginTop: 8, fontSize: 12, color: colors.warning, fontWeight: '900' },

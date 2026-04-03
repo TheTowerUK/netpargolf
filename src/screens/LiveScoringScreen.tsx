@@ -19,6 +19,8 @@ import {
   type PersistedRoundV2,
 } from '../storage/roundStorage';
 import { computePlayingHandicap, scoreHoleOptionA } from '../core/scoring';
+import { hasMissingStrokeIndex } from '../utils/courseValidation';
+import StrokeIndexWarningBanner from '../components/StrokeIndexWarningBanner';
 import type { RoundingMode } from '../core/scoring';
 import { hapticTap } from '../utils/feedback';
 import { colors } from '../theme/colors';
@@ -26,10 +28,12 @@ import { colors } from '../theme/colors';
 const HOLES = Array.from({ length: 18 }, (_, i) => i + 1);
 
 const COMPETITION_LABELS: Record<string, string> = {
-  individual_stableford: 'Stableford',
-  betterball: 'Betterball',
-  matchplay: 'Matchplay',
+  individual_stableford: 'Individual Stableford',
+  fourball_strokeplay: 'Four-Ball Stroke Play',
+  fourball_matchplay: 'Four-Ball Match Play',
+  matchplay: 'Match Play',
   strokeplay: 'Strokeplay',
+  betterball: 'Four-Ball Stroke Play',
 };
 
 function LockedValue({ label, value }: { label: string; value: string }) {
@@ -288,9 +292,15 @@ export default function LiveScoringScreen({ route, navigation }: Props) {
     );
   }
 
+  const hasMissingSI = hasMissingStrokeIndex(course);
+
   return (
     <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
       <Text style={styles.title}>Live Scoring</Text>
+
+      {hasMissingSI && (
+        <StrokeIndexWarningBanner onPressFix={() => navigation.navigate('CourseSetup')} />
+      )}
 
       <View style={styles.topActionsRow}>
         <Pressable

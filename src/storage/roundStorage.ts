@@ -3,7 +3,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export type RoundCompetition =
   | 'individual_stableford'
-  | 'betterball'
+  | 'fourball_strokeplay'
+  | 'fourball_matchplay'
   | 'matchplay';
 
 export type RoundingMode = 'floor' | 'round' | 'ceil';
@@ -12,7 +13,14 @@ export type PersistedPlayer = {
   id: string;
   name: string;
   handicapIndex: number | null;
+
+  rawCourseHandicap: number | null;
   courseHandicap: number | null;
+
+  rawPlayingHandicap: number | null;
+  playingHandicap: number | null;
+
+  matchStrokes: number | null;
 };
 
 export type PersistedHoleScore = {
@@ -29,6 +37,7 @@ export type PersistedRound = {
   competition: RoundCompetition;
   allowancePercent: number;
   roundingMode: RoundingMode;
+  teeName?: string | null;
 
   players: PersistedPlayer[];
   scores: PersistedHoleScore[];
@@ -48,6 +57,10 @@ function makeEmptyScores(players: PersistedPlayer[]): PersistedHoleScore[] {
   }));
 }
 
+function optFiniteNumber(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
 function normalisePlayer(player: any): PersistedPlayer | null {
   if (!player || typeof player !== 'object') return null;
   if (!player.id || typeof player.id !== 'string') return null;
@@ -55,15 +68,27 @@ function normalisePlayer(player: any): PersistedPlayer | null {
   return {
     id: player.id,
     name: typeof player.name === 'string' ? player.name : '',
-    handicapIndex:
-      typeof player.handicapIndex === 'number' && Number.isFinite(player.handicapIndex)
-        ? player.handicapIndex
-        : null,
-    courseHandicap:
-      typeof player.courseHandicap === 'number' && Number.isFinite(player.courseHandicap)
-        ? player.courseHandicap
-        : null,
+    handicapIndex: optFiniteNumber(player.handicapIndex),
+    rawCourseHandicap: optFiniteNumber(player.rawCourseHandicap),
+    courseHandicap: optFiniteNumber(player.courseHandicap),
+    rawPlayingHandicap: optFiniteNumber(player.rawPlayingHandicap),
+    playingHandicap: optFiniteNumber(player.playingHandicap),
+    matchStrokes: optFiniteNumber(player.matchStrokes),
   };
+}
+
+function migrateCompetition(raw: any): RoundCompetition {
+  const c = raw?.competition;
+  if (c === 'betterball') return 'fourball_strokeplay';
+  if (
+    c === 'individual_stableford' ||
+    c === 'fourball_strokeplay' ||
+    c === 'fourball_matchplay' ||
+    c === 'matchplay'
+  ) {
+    return c;
+  }
+  return 'individual_stableford';
 }
 
 function normaliseRound(raw: any): PersistedRound | null {
@@ -101,10 +126,7 @@ function normaliseRound(raw: any): PersistedRound | null {
     };
   });
 
-  const competition: RoundCompetition =
-    raw.competition === 'betterball' || raw.competition === 'matchplay'
-      ? raw.competition
-      : 'individual_stableford';
+  const competition: RoundCompetition = migrateCompetition(raw);
 
   const roundingMode: RoundingMode =
     raw.roundingMode === 'floor' || raw.roundingMode === 'ceil'
@@ -144,6 +166,7 @@ function normaliseRound(raw: any): PersistedRound | null {
     competition,
     allowancePercent,
     roundingMode,
+    teeName: typeof raw.teeName === 'string' ? raw.teeName : null,
     players,
     scores,
     currentHole,
@@ -159,9 +182,19 @@ export function buildInitialRound(params: {
   competition: RoundCompetition;
   allowancePercent: number;
   roundingMode: RoundingMode;
+  teeName?: string | null;
   players: PersistedPlayer[];
 }): PersistedRound {
   const now = new Date().toISOString();
+  const players = params.players.map((player) => ({
+    ...player,
+    handicapIndex: player.handicapIndex ?? null,
+    rawCourseHandicap: player.rawCourseHandicap ?? null,
+    courseHandicap: player.courseHandicap ?? null,
+    rawPlayingHandicap: player.rawPlayingHandicap ?? null,
+    playingHandicap: player.playingHandicap ?? null,
+    matchStrokes: player.matchStrokes ?? null,
+  }));
 
   return {
     id: `round-${Date.now()}`,
@@ -170,8 +203,9 @@ export function buildInitialRound(params: {
     competition: params.competition,
     allowancePercent: params.allowancePercent,
     roundingMode: params.roundingMode,
-    players: params.players,
-    scores: makeEmptyScores(params.players),
+    teeName: params.teeName ?? null,
+    players,
+    scores: makeEmptyScores(players),
     currentHole: 1,
     isComplete: false,
     completedAt: null,

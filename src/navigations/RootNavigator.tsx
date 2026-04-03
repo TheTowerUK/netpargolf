@@ -15,6 +15,7 @@ import CourseSearchScreen from '../screens/CourseSearchScreen';
 import LiveScoringScreen from '../screens/LiveScoringScreen';
 import ScoreboardScreen from '../screens/ScoreboardScreen';
 import ScorecardScreen from '../screens/ScorecardScreen';
+import AboutScreen from '../screens/AboutScreen';
 import RoundHistoryScreen from '../screens/RoundHistoryScreen';
 import StatsScreen from '../screens/StatsScreen';
 
@@ -39,6 +40,7 @@ export default function RootNavigator() {
         <Stack.Screen name="Scoreboard" component={ScoreboardScreen} options={{ title: 'Scoreboard' }} />
         <Stack.Screen name="Scorecard" component={ScorecardScreen} options={{ title: 'Scorecard' }} />
         <Stack.Screen name="HelpPractice" component={HelpPracticeScreen} options={{ title: 'Help / Practice' }} />
+        <Stack.Screen name="About" component={AboutScreen} options={{ title: 'About' }} />
         <Stack.Screen name="CourseSetup" component={CourseSetupScreen} options={{ title: 'Course Setup' }} />
         <Stack.Screen name="CourseSearch" component={CourseSearchScreen} options={{ title: 'Find a course' }} />
         <Stack.Screen name="RoundHistory" component={RoundHistoryScreen} options={{ title: 'Round History' }} />

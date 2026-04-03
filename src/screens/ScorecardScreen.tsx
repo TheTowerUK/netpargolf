@@ -13,9 +13,12 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigations/types';
 import type { Course } from '../core/course';
+import { hasMissingStrokeIndex } from '../utils/courseValidation';
+import StrokeIndexWarningBanner from '../components/StrokeIndexWarningBanner';
+import { getGrossForHole, strokesBasisForAllocation } from '../utils/scoreboardHelpers';
 import { scoreHoleOptionA } from '../core/scoring';
 import { loadCourse } from '../storage/courseStorage';
-import { loadRound, type PersistedRoundV1 } from '../storage/roundStorage';
+import { loadCurrentRound, type PersistedRound } from '../storage/roundStorage';
 import { getRoundById } from '../storage/roundHistoryStorage';
 import { colors } from '../theme/colors';
 
@@ -23,17 +26,6 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 
 const HOLES = Array.from({ length: 18 }, (_, i) => i + 1);
-
-function computePlayingHandicapFromRound(
-  courseHandicap: number,
-  allowancePercent: number,
-  roundingMode: 'nearest' | 'floor' | 'ceil'
-): number {
-  const raw = courseHandicap * (allowancePercent / 100);
-  if (roundingMode === 'floor') return Math.floor(raw);
-  if (roundingMode === 'ceil') return Math.ceil(raw);
-  return Math.round(raw);
-}
 
 /** Strokes received on a hole based on handicap and stroke index. Correct golf math. */
 function strokesReceivedOnHole(handicap: number, strokeIndex: number): number {
@@ -77,10 +69,11 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Scorecard'>;
 
 export default function ScorecardScreen({ route }: Props) {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const viewingHistory = !!route.params?.roundId;
+  const roundIdParam = route.params ? (route.params as { roundId?: string }).roundId : undefined;
+  const viewingHistory = !!roundIdParam;
 
   const [course, setCourse] = useState<Course | null>(null);
-  const [round, setRound] = useState<PersistedRoundV1 | null>(null);
+  const [round, setRound] = useState<PersistedRound | null>(null);
   const [loading, setLoading] = useState(true);
   const [side, setSide] = useState<'front' | 'back'>('front');
   const [showParSiTip, setShowParSiTip] = useState(false);
@@ -114,15 +107,15 @@ export default function ScorecardScreen({ route }: Props) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const roundId = route.params?.roundId;
-      const rPromise = roundId ? getRoundById(roundId) : loadRound();
+      const roundId = roundIdParam;
+      const rPromise = roundId ? getRoundById(roundId) : loadCurrentRound();
       const [c, r] = await Promise.all([loadCourse(), rPromise]);
       setCourse(c);
       setRound(r);
     } finally {
       setLoading(false);
     }
-  }, [route.params?.roundId]);
+  }, [roundIdParam]);
 
   useEffect(() => {
     refresh();
@@ -132,23 +125,24 @@ export default function ScorecardScreen({ route }: Props) {
 
   const rows: Row[] = useMemo(() => {
     const players = round?.players ?? [];
-    const holes = round?.holes ?? {};
     const courseHoles = course?.holes ?? [];
 
     return players.slice(0, 4).map((p) => {
-      const hcpVal = parseInt(p.courseHandicap, 10);
-      const handicapNum = Number.isFinite(hcpVal) ? hcpVal : 0;
-      const pct = parseFloat(round?.allowancePercent ?? '100');
-      const rm = (round?.roundingMode as 'nearest' | 'floor' | 'ceil') ?? 'nearest';
-      const playingHandicap = Number.isFinite(pct)
-        ? computePlayingHandicapFromRound(handicapNum, pct, rm)
-        : handicapNum;
+      const handicapNum =
+        p.courseHandicap != null && Number.isFinite(p.courseHandicap) ? p.courseHandicap : 0;
+      const rmRaw = round?.roundingMode ?? 'round';
+      const rm: 'nearest' | 'floor' | 'ceil' =
+        rmRaw === 'floor' || rmRaw === 'ceil' ? rmRaw : 'nearest';
+      const basis =
+        round != null ? strokesBasisForAllocation(p, round) : null;
+      const playingHandicap = basis != null && Number.isFinite(basis) ? basis : 0;
 
       const scores = HOLES.map((h) => {
-        const v = holes?.[h]?.grossByPlayer?.[p.id];
-        const n = parseInt(v ?? '', 10);
-        return Number.isFinite(n) ? n : '';
+        const gross = getGrossForHole(round, h, p.id);
+        return typeof gross === 'number' ? gross : '';
       });
+
+      let strokesPerHole: number[] = [];
 
       let netsPerHole: (number | null)[];
       let netOut: number;
@@ -160,7 +154,7 @@ export default function ScorecardScreen({ route }: Props) {
       let pointsTotal = 0;
 
       if (courseReady && courseHoles.length === 18) {
-        const strokesPerHole = HOLES.map((h) => {
+        strokesPerHole = HOLES.map((h) => {
           const holeData = courseHoles[h - 1];
           const si = holeData?.strokeIndex;
           if (si == null || !Number.isFinite(si)) return 0;
@@ -191,7 +185,7 @@ export default function ScorecardScreen({ route }: Props) {
             const b = scoreHoleOptionA({
               courseHandicap: playingHandicap,
               allowancePercent: 1,
-              roundingMode: (round?.roundingMode ?? 'nearest') as 'nearest' | 'floor' | 'ceil',
+              roundingMode: rm,
               hole: { par: par as number, strokeIndex: si as number },
               gross,
             });
@@ -232,7 +226,7 @@ export default function ScorecardScreen({ route }: Props) {
         pointsOut,
         pointsIn,
         pointsTotal,
-        strokesPerHole: [],
+        strokesPerHole,
         netsPerHole,
       };
     });
@@ -250,10 +244,12 @@ export default function ScorecardScreen({ route }: Props) {
       courseName,
       courseReady,
       meta: {
-        competitionName: round?.meta?.competitionName,
-        competitionDate: round?.meta?.competitionDate,
-        tee: round?.meta?.tee,
-        marker: round?.meta?.marker,
+        competitionName: round?.competition
+          ? String(round.competition).replace(/_/g, ' ')
+          : undefined,
+        competitionDate: undefined,
+        tee: undefined,
+        marker: undefined,
       },
       players: rows.map((r) => ({
         name: r.name,
@@ -321,12 +317,15 @@ export default function ScorecardScreen({ route }: Props) {
             <Text style={styles.handicapReadOnly}>Per player (edit in Live Scoring)</Text>
           </View>
           <Text style={styles.meta}>
-            {round?.savedAt ? `Last saved: ${new Date(round.savedAt).toLocaleString()}` : 'No round saved yet'}
+            {round?.updatedAt ? `Last saved: ${new Date(round.updatedAt).toLocaleString()}` : 'No round saved yet'}
           </Text>
           {!courseReady && (course || round) ? (
             <Text style={styles.courseNote}>
               Course not set — scorecard will still show gross scores.
             </Text>
+          ) : null}
+          {courseReady && hasMissingStrokeIndex(course) ? (
+            <StrokeIndexWarningBanner onPressFix={() => navigation.navigate('CourseSetup')} />
           ) : null}
         </View>
 

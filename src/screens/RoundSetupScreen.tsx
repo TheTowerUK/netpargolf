@@ -21,15 +21,20 @@ import {
   type RoundCompetition,
   type RoundingMode,
 } from '../storage/roundStorage';
+import type { Course, CourseTee } from '../core/course';
+import { loadActiveCourse } from '../storage/courseStorage';
+import { hasMissingStrokeIndex } from '../utils/courseValidation';
+import StrokeIndexWarningBanner from '../components/StrokeIndexWarningBanner';
+import { hapticTap } from '../utils/feedback';
+import { calculateStrokesOnHole } from '../core/scoring';
+import {
+  applyRounding,
+  calculateCompetitionHandicaps,
+  calculateCourseHandicap,
+  calculateRawCourseHandicap,
+} from '../core/handicap';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RoundSetup'>;
-
-type PlayerForm = {
-  id: string;
-  name: string;
-  handicapIndex: string;
-  courseHandicap: string;
-};
 
 function makeId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
@@ -37,56 +42,70 @@ function makeId(prefix: string) {
 
 const COMPETITIONS: { key: RoundCompetition; label: string }[] = [
   { key: 'individual_stableford', label: 'Individual Stableford' },
-  { key: 'betterball', label: 'Betterball' },
-  { key: 'matchplay', label: 'Matchplay' },
+  { key: 'fourball_strokeplay', label: 'Four-Ball Stroke Play' },
+  { key: 'fourball_matchplay', label: 'Four-Ball Match Play' },
+  { key: 'matchplay', label: 'Match Play' },
 ];
+
+const DEFAULT_ALLOWANCE_BY_COMPETITION: Record<RoundCompetition, number> = {
+  individual_stableford: 100,
+  fourball_strokeplay: 85,
+  fourball_matchplay: 90,
+  matchplay: 100,
+};
 
 const ROUNDING_OPTIONS: { key: RoundingMode; label: string }[] = [
-  { key: 'floor', label: 'Floor' },
-  { key: 'round', label: 'Round' },
-  { key: 'ceil', label: 'Ceil' },
+  { key: 'floor', label: 'Floor (round down)' },
+  { key: 'round', label: 'Round (nearest)' },
+  { key: 'ceil', label: 'Ceil (round up)' },
 ];
 
-function sanitiseDecimalInput(value: string): string {
-  let cleaned = value.replace(',', '.').replace(/[^0-9.]/g, '');
-
-  if (cleaned.startsWith('.')) {
-    cleaned = `0${cleaned}`;
-  }
-
-  const firstDot = cleaned.indexOf('.');
-  if (firstDot === -1) return cleaned;
-
-  const beforeDot = cleaned.slice(0, firstDot + 1);
-  const afterDot = cleaned.slice(firstDot + 1).replace(/\./g, '');
-  return beforeDot + afterDot;
-}
+const ROUNDING_LABELS: Record<RoundingMode, string> = {
+  floor: 'Floor (round down)',
+  round: 'Round (nearest)',
+  ceil: 'Ceil (round up)',
+};
 
 function sanitiseIntegerInput(value: string): string {
   return value.replace(/[^0-9]/g, '');
 }
 
-function parseNullableDecimal(value: string): number | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const n = Number(trimmed);
-  return Number.isFinite(n) ? n : null;
+/** Keeps one decimal separator and at most one digit after it (WHS HI); max 5 chars. */
+function sanitizeHiInput(value: string): string {
+  let normalised = value.replace(',', '.').replace(/[^0-9.]/g, '');
+  if (normalised.startsWith('.')) {
+    normalised = `0${normalised}`;
+  }
+  const parts = normalised.split('.');
+  const intPart = parts[0] ?? '';
+  if (parts.length === 1) {
+    return intPart.slice(0, 5);
+  }
+  const fracRaw = parts.slice(1).join('').replace(/\./g, '');
+  const frac = fracRaw.slice(0, 1);
+  if (frac.length > 0) {
+    return `${intPart}.${frac}`.slice(0, 5);
+  }
+  return `${intPart}.`.slice(0, 5);
 }
 
-function parseNullableInteger(value: string): number | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const n = Number(trimmed);
+function handicapIndexFromDraft(safeValue: string): number | null {
+  if (safeValue === '' || safeValue === '.') return null;
+  const n = Number(safeValue);
   if (!Number.isFinite(n)) return null;
-  return Math.round(n);
+  return Math.round(n * 10) / 10;
 }
 
-function makeBlankPlayer(): PlayerForm {
+function makeBlankPlayer(): PersistedPlayer {
   return {
     id: makeId('player'),
     name: '',
-    handicapIndex: '',
-    courseHandicap: '',
+    handicapIndex: null,
+    rawCourseHandicap: null,
+    courseHandicap: null,
+    rawPlayingHandicap: null,
+    playingHandicap: null,
+    matchStrokes: null,
   };
 }
 
@@ -95,16 +114,28 @@ export default function RoundSetupScreen({ navigation }: Props) {
     useState<RoundCompetition>('individual_stableford');
   const [allowancePercent, setAllowancePercent] = useState('100');
   const [roundingMode, setRoundingMode] = useState<RoundingMode>('round');
-  const [players, setPlayers] = useState<PlayerForm[]>([makeBlankPlayer()]);
+  const [players, setPlayers] = useState<PersistedPlayer[]>([makeBlankPlayer()]);
   const [hasExistingRound, setHasExistingRound] = useState(false);
+  const [course, setCourse] = useState<Course | null>(null);
+  const [selectedTeeName, setSelectedTeeName] = useState<string>('Yellow');
+  const [selectedShotsPreviewPlayerId, setSelectedShotsPreviewPlayerId] = useState<string | null>(null);
+  /** Text shown in HI field while typing (avoids losing a trailing "." before digits). */
+  const [handicapIndexDraftById, setHandicapIndexDraftById] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let mounted = true;
 
     (async () => {
-      const existing = await loadCurrentRound();
+      const [existing, activeCourse] = await Promise.all([
+        loadCurrentRound(),
+        loadActiveCourse(),
+      ]);
       if (!mounted) return;
       setHasExistingRound(!!existing);
+      setCourse(activeCourse);
+      if (activeCourse?.tees?.length) {
+        setSelectedTeeName(activeCourse.tees[0].name);
+      }
     })();
 
     return () => {
@@ -116,10 +147,196 @@ export default function RoundSetupScreen({ navigation }: Props) {
     return `${players.length} player${players.length === 1 ? '' : 's'}`;
   }, [players.length]);
 
-  function updatePlayer(id: string, patch: Partial<PlayerForm>) {
+  const selectedTee: CourseTee | null = useMemo(() => {
+    if (!course?.tees?.length) return null;
+    return course.tees.find((tee) => tee.name === selectedTeeName) ?? null;
+  }, [course, selectedTeeName]);
+
+  function recalcPlayerHandicaps(nextPlayers: PersistedPlayer[]): PersistedPlayer[] {
+    return calculateCompetitionHandicaps({
+      players: nextPlayers,
+      competition,
+      allowancePercent: Number(allowancePercent) || 100,
+      roundingMode,
+      slopeRating: selectedTee?.slopeRating ?? null,
+      courseRating: selectedTee?.courseRating ?? null,
+      par: selectedTee?.par ?? null,
+    });
+  }
+
+  const lowestRawCourseHandicapIds = useMemo(() => {
+    const withRaw = players.filter(
+      (p) => p.rawCourseHandicap != null && Number.isFinite(p.rawCourseHandicap)
+    );
+    if (!withRaw.length) return new Set<string>();
+    const min = Math.min(...withRaw.map((p) => p.rawCourseHandicap!));
+    return new Set(withRaw.filter((p) => p.rawCourseHandicap === min).map((p) => p.id));
+  }, [players]);
+
+  /** Strokes basis for hole allocation preview: playing HCP or match strokes. */
+  const strokesPreviewList = useMemo(() => {
+    const pct = parseFloat(allowancePercent);
+    if (!Number.isFinite(pct) || pct <= 0) return [];
+    return players
+      .map((p, idx) => {
+        const displayName = p.name?.trim() || `Player ${idx + 1}`;
+        if (competition === 'fourball_matchplay') {
+          if (p.matchStrokes == null || !Number.isFinite(p.matchStrokes)) return null;
+          return {
+            id: p.id,
+            name: displayName,
+            final: p.matchStrokes,
+            kind: 'match' as const,
+            courseHandicap: p.courseHandicap,
+          };
+        }
+        if (p.playingHandicap == null || !Number.isFinite(p.playingHandicap)) return null;
+        return {
+          id: p.id,
+          name: displayName,
+          final: p.playingHandicap,
+          kind: 'playing' as const,
+          courseHandicap: p.courseHandicap,
+          rawPlaying: p.rawPlayingHandicap,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x != null);
+  }, [players, allowancePercent, competition, selectedTee, roundingMode]);
+
+  const roundingPreview = useMemo(() => {
+    if (competition === 'fourball_matchplay') return null;
+
+    const hi = players[0]?.handicapIndex ?? null;
+    const pct = parseFloat(allowancePercent);
+    const teePar = selectedTee?.par ?? null;
+    const teeCourseRating = selectedTee?.courseRating ?? null;
+    const teeSlopeRating = selectedTee?.slopeRating ?? null;
+
+    const isValid =
+      hi != null &&
+      Number.isFinite(hi) &&
+      teePar != null &&
+      teeCourseRating != null &&
+      teeSlopeRating != null &&
+      Number.isFinite(pct) &&
+      pct > 0;
+
+    if (!isValid) {
+      return { isValid: false as const };
+    }
+
+    const rawCh = calculateRawCourseHandicap({
+      handicapIndex: hi,
+      slopeRating: teeSlopeRating,
+      courseRating: teeCourseRating,
+      par: teePar,
+    });
+    const chRounded = calculateCourseHandicap(rawCh, roundingMode);
+    const rawPlaying = rawCh * (pct / 100);
+
+    return {
+      isValid: true as const,
+      courseHandicap: chRounded,
+      allowance: pct,
+      calculated: rawPlaying,
+      floor: applyRounding(rawPlaying, 'floor'),
+      round: applyRounding(rawPlaying, 'round'),
+      ceil: applyRounding(rawPlaying, 'ceil'),
+    };
+  }, [players, allowancePercent, selectedTee, competition, roundingMode]);
+
+  /** Mirror RoundScoringScreen getHoleMeta: same hole order (1–18) and SI source. */
+  const shotsPreviewData = useMemo(() => {
+    if (!course?.holes || course.holes.length !== 18) return null;
+    if (hasMissingStrokeIndex(course)) return null;
+    const pct = parseFloat(allowancePercent);
+    if (!Number.isFinite(pct) || pct <= 0) return null;
+    const validPlayers = strokesPreviewList;
+    if (validPlayers.length === 0) return null;
+    const selectedId = selectedShotsPreviewPlayerId ?? validPlayers[0].id;
+    const selected = validPlayers.find((p) => p.id === selectedId) ?? validPlayers[0];
+    const holes: { holeNumber: number; strokeIndex: number; shots: number }[] = [];
+    for (let holeNumber = 1; holeNumber <= 18; holeNumber++) {
+      const courseHole =
+        course.holes.find((h) => h.holeNumber === holeNumber) ??
+        course.holes[holeNumber - 1];
+      const strokeIndex =
+        courseHole?.strokeIndex ??
+        (courseHole as { si?: number })?.si ??
+        null;
+      if (!Number.isFinite(strokeIndex) || strokeIndex < 1 || strokeIndex > 18) return null;
+      const shots = calculateStrokesOnHole(selected.final, strokeIndex);
+      holes.push({ holeNumber, strokeIndex, shots });
+    }
+    return { selected, holes, validPlayers };
+  }, [course, allowancePercent, strokesPreviewList, selectedShotsPreviewPlayerId]);
+
+  useEffect(() => {
+    if (!strokesPreviewList.length) {
+      setSelectedShotsPreviewPlayerId(null);
+      return;
+    }
+    const ids = strokesPreviewList.map((p) => p.id);
+    if (strokesPreviewList.length === 1) {
+      setSelectedShotsPreviewPlayerId(ids[0]);
+      return;
+    }
+    if (!selectedShotsPreviewPlayerId || !ids.includes(selectedShotsPreviewPlayerId)) {
+      setSelectedShotsPreviewPlayerId(ids[0]);
+    }
+  }, [strokesPreviewList, selectedShotsPreviewPlayerId]);
+
+  function updatePlayer(id: string, patch: Partial<PersistedPlayer>) {
     setPlayers((prev) =>
       prev.map((player) => (player.id === id ? { ...player, ...patch } : player))
     );
+  }
+
+  function updatePlayerHandicapIndex(playerId: string, value: string) {
+    if (value.trim() === '') {
+      setHandicapIndexDraftById((prev) => {
+        const next = { ...prev };
+        delete next[playerId];
+        return next;
+      });
+      setPlayers((prev) =>
+        recalcPlayerHandicaps(
+          prev.map((p) => (p.id === playerId ? { ...p, handicapIndex: null } : p))
+        )
+      );
+      return;
+    }
+
+    const safeValue = sanitizeHiInput(value);
+    setHandicapIndexDraftById((prev) => ({ ...prev, [playerId]: safeValue }));
+
+    const hi = handicapIndexFromDraft(safeValue);
+    setPlayers((prev) =>
+      recalcPlayerHandicaps(
+        prev.map((p) => (p.id === playerId ? { ...p, handicapIndex: hi } : p))
+      )
+    );
+  }
+
+  function finalizeHandicapIndexDraft(playerId: string) {
+    setHandicapIndexDraftById((prev) => {
+      const value = prev[playerId];
+      if (value === undefined || value === '') return prev;
+
+      const normalised = value.replace(',', '.');
+
+      if (normalised.endsWith('.')) {
+        const fixed = `${normalised}0`.slice(0, 5);
+        return {
+          ...prev,
+          [playerId]: fixed,
+        };
+      }
+
+      const next = { ...prev };
+      delete next[playerId];
+      return next;
+    });
   }
 
   function addPlayer() {
@@ -128,8 +345,17 @@ export default function RoundSetupScreen({ navigation }: Props) {
 
   function removePlayer(id: string) {
     if (players.length <= 1) return;
+    setHandicapIndexDraftById((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     setPlayers((prev) => prev.filter((p) => p.id !== id));
   }
+
+  useEffect(() => {
+    setPlayers((prev) => recalcPlayerHandicaps(prev));
+  }, [selectedTeeName, allowancePercent, roundingMode, course, competition]);
 
   function handleResumeRound() {
     navigation.navigate('RoundScoring');
@@ -155,10 +381,7 @@ export default function RoundSetupScreen({ navigation }: Props) {
   }
 
   async function createAndStartRound() {
-    const trimmedPlayers = players.map((p) => ({
-      ...p,
-      name: p.name.trim(),
-    }));
+    const trimmedPlayers = players.map((p) => ({ ...p, name: p.name.trim() }));
 
     if (trimmedPlayers.some((p) => !p.name)) {
       Alert.alert('Missing player name', 'Please enter a name for each player.');
@@ -171,17 +394,16 @@ export default function RoundSetupScreen({ navigation }: Props) {
       return;
     }
 
-    const persistedPlayers: PersistedPlayer[] = trimmedPlayers.map((p) => ({
-      id: p.id,
-      name: p.name,
-      handicapIndex: parseNullableDecimal(p.handicapIndex),
-      courseHandicap: parseNullableInteger(p.courseHandicap),
+    const persistedPlayers: PersistedPlayer[] = recalcPlayerHandicaps(trimmedPlayers).map((p) => ({
+      ...p,
+      name: p.name.trim(),
     }));
 
     const round = buildInitialRound({
       competition,
       allowancePercent: parsedAllowance,
       roundingMode,
+      teeName: selectedTeeName,
       players: persistedPlayers,
     });
 
@@ -221,6 +443,39 @@ export default function RoundSetupScreen({ navigation }: Props) {
           Choose the format, add players, then start scoring.
         </Text>
 
+        <View style={styles.card}>
+          <Text style={styles.guideCardTitle}>Before you start</Text>
+          <Text style={styles.guideCardBody}>1. Choose or add your course</Text>
+          <Text style={styles.guideCardBody}>2. Check par and Stroke Index values</Text>
+          <Text style={styles.guideCardBody}>3. Set up your round and players</Text>
+          <Text style={styles.guideCardBody}>4. Start scoring</Text>
+          <Text style={styles.guideCardNote}>
+            If Stroke Index values are missing, update them in Course Setup before playing for accurate handicap scoring.
+          </Text>
+        </View>
+
+        {!course && (
+          <View style={styles.emptyStateCard}>
+            <Text style={styles.emptyStateTitle}>No course selected</Text>
+            <Text style={styles.emptyStateText}>
+              Choose or add a course in Course Setup before starting your round.
+            </Text>
+            <Pressable
+              onPress={() => {
+                hapticTap();
+                navigation.navigate('CourseSetup');
+              }}
+              style={({ pressed }) => [styles.emptyStateBtn, pressed && { opacity: 0.9 }]}
+            >
+              <Text style={styles.emptyStateBtnText}>Go to Course Setup</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {hasMissingStrokeIndex(course) && (
+          <StrokeIndexWarningBanner onPressFix={() => navigation.navigate('CourseSetup')} />
+        )}
+
         {hasExistingRound && (
           <View style={styles.warningCard}>
             <Text style={styles.warningTitle}>Saved round detected</Text>
@@ -250,7 +505,12 @@ export default function RoundSetupScreen({ navigation }: Props) {
                 <Pressable
                   key={item.key}
                   style={[styles.optionChip, selected && styles.optionChipSelected]}
-                  onPress={() => setCompetition(item.key)}
+                  onPress={() => {
+                    setCompetition(item.key);
+                    setAllowancePercent(
+                      String(DEFAULT_ALLOWANCE_BY_COMPETITION[item.key])
+                    );
+                  }}
                 >
                   <Text
                     style={[
@@ -264,6 +524,44 @@ export default function RoundSetupScreen({ navigation }: Props) {
               );
             })}
           </View>
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Tee</Text>
+          {course?.tees?.length ? (
+            <>
+              <View style={styles.optionGroup}>
+                {course.tees.map((tee) => {
+                  const isSelected = selectedTee?.name === tee.name;
+                  return (
+                    <Pressable
+                      key={tee.name}
+                      style={[styles.optionChip, isSelected && styles.optionChipSelected]}
+                      onPress={() => setSelectedTeeName(tee.name)}
+                    >
+                      <Text
+                        style={[
+                          styles.optionChipText,
+                          isSelected && styles.optionChipTextSelected,
+                        ]}
+                      >
+                        {tee.name}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {selectedTee ? (
+                <Text style={styles.roundingHelper}>
+                  Par {selectedTee.par} | CR {selectedTee.courseRating} | Slope {selectedTee.slopeRating}
+                </Text>
+              ) : null}
+            </>
+          ) : (
+            <Text style={styles.roundingPreviewEmpty}>
+              No tee rating data found for this course. Add tee metadata to enable automatic course handicap.
+            </Text>
+          )}
         </View>
 
         <View style={styles.card}>
@@ -301,6 +599,80 @@ export default function RoundSetupScreen({ navigation }: Props) {
               );
             })}
           </View>
+
+          <Text style={styles.roundingHelper}>
+            {competition === 'fourball_matchplay'
+              ? 'Rounding applies to Course Handicap and to each player’s match strokes after allowance.'
+              : 'Rounding applies to Course Handicap and to Playing Handicap (from raw Course Handicap × allowance).'}
+          </Text>
+
+          <View style={styles.roundingExamples}>
+            <Text style={styles.roundingExamplesTitle}>Examples</Text>
+            <Text style={styles.roundingExample}>20.6 → Floor 20, Round 21, Ceil 21</Text>
+            <Text style={styles.roundingExample}>20.4 → Floor 20, Round 20, Ceil 21</Text>
+          </View>
+
+          <View style={styles.roundingPreview}>
+            <Text style={styles.roundingPreviewTitle}>
+              {competition === 'fourball_matchplay'
+                ? 'Match strokes'
+                : 'Playing handicap preview'}
+            </Text>
+            {competition === 'fourball_matchplay' ? (
+              <Text style={styles.roundingPreviewHelper}>
+                Match strokes use the lowest raw Course Handicap in the field as scratch; other players get allowance × the difference (see Player Summary).
+              </Text>
+            ) : roundingPreview && roundingPreview.isValid ? (
+              <>
+                <Text style={styles.roundingPreviewHelper}>
+                  Uses raw Course Handicap × allowance, then each rounding mode. Player 1 sample.
+                </Text>
+                <Text style={styles.roundingPreviewRow}>
+                  Course Handicap: {roundingPreview.courseHandicap}
+                </Text>
+                <Text style={styles.roundingPreviewRow}>
+                  Allowance: {roundingPreview.allowance}%
+                </Text>
+                <Text style={styles.roundingPreviewRow}>
+                  Raw playing (before round): {roundingPreview.calculated.toFixed(2)}
+                </Text>
+                <View style={styles.roundingPreviewModes}>
+                  <View style={[styles.roundingPreviewModeRow, roundingMode === 'floor' && styles.roundingPreviewModeSelected]}>
+                    <Text style={[styles.roundingPreviewModeLabel, roundingMode === 'floor' && styles.roundingPreviewModeLabelSelected]}>
+                      Floor (round down)
+                    </Text>
+                    <Text style={[styles.roundingPreviewModeValue, roundingMode === 'floor' && styles.roundingPreviewModeValueSelected]}>
+                      {roundingPreview.floor}
+                    </Text>
+                  </View>
+                  <View style={[styles.roundingPreviewModeRow, roundingMode === 'round' && styles.roundingPreviewModeSelected]}>
+                    <Text style={[styles.roundingPreviewModeLabel, roundingMode === 'round' && styles.roundingPreviewModeLabelSelected]}>
+                      Round (nearest)
+                    </Text>
+                    <Text style={[styles.roundingPreviewModeValue, roundingMode === 'round' && styles.roundingPreviewModeValueSelected]}>
+                      {roundingPreview.round}
+                    </Text>
+                  </View>
+                  <View style={[styles.roundingPreviewModeRow, roundingMode === 'ceil' && styles.roundingPreviewModeSelected]}>
+                    <Text style={[styles.roundingPreviewModeLabel, roundingMode === 'ceil' && styles.roundingPreviewModeLabelSelected]}>
+                      Ceil (round up)
+                    </Text>
+                    <Text style={[styles.roundingPreviewModeValue, roundingMode === 'ceil' && styles.roundingPreviewModeValueSelected]}>
+                      {roundingPreview.ceil}
+                    </Text>
+                  </View>
+                </View>
+              </>
+            ) : (
+              <Text style={styles.roundingPreviewEmpty}>
+                Enter Handicap Index, allowance, and select a tee to see a preview.
+              </Text>
+            )}
+          </View>
+
+          <Text style={styles.roundingNote}>
+            This may affect shots received and scoring depending on competition rules.
+          </Text>
         </View>
 
         <View style={styles.card}>
@@ -337,33 +709,200 @@ export default function RoundSetupScreen({ navigation }: Props) {
 
               <Text style={styles.inputLabel}>Handicap Index (H.I.)</Text>
               <TextInput
-                value={player.handicapIndex}
-                onChangeText={(v) =>
-                  updatePlayer(player.id, {
-                    handicapIndex: sanitiseDecimalInput(v),
-                  })
+                value={
+                  handicapIndexDraftById[player.id] ??
+                  (player.handicapIndex == null ? '' : String(player.handicapIndex))
                 }
+                onChangeText={(v) => updatePlayerHandicapIndex(player.id, v)}
+                onBlur={() => finalizeHandicapIndexDraft(player.id)}
                 keyboardType="decimal-pad"
                 style={styles.input}
-                placeholder="e.g. 12.4"
+                placeholder="e.g. 18.4"
+                maxLength={5}
                 placeholderTextColor="#9ca3af"
               />
 
-              <Text style={styles.inputLabel}>Course Handicap</Text>
-              <TextInput
-                value={player.courseHandicap}
-                onChangeText={(v) =>
-                  updatePlayer(player.id, {
-                    courseHandicap: sanitiseIntegerInput(v),
-                  })
-                }
-                keyboardType="number-pad"
-                style={styles.input}
-                placeholder="e.g. 14"
-                placeholderTextColor="#9ca3af"
-              />
+              <View style={[styles.playerSummaryRow, styles.playerSummaryRowThree]}>
+                <View style={styles.summaryPill}>
+                  <Text style={styles.summaryLabel}>HI</Text>
+                  <Text style={styles.summaryValue}>
+                    {player.handicapIndex == null ? '-' : String(player.handicapIndex)}
+                  </Text>
+                </View>
+                <View style={styles.summaryPill}>
+                  <Text style={styles.summaryLabel}>Course Hcp</Text>
+                  <Text style={styles.summaryValue}>{player.courseHandicap ?? '-'}</Text>
+                </View>
+                {competition === 'fourball_matchplay' ? (
+                  <View style={styles.summaryPill}>
+                    <Text style={styles.summaryLabel}>Match Str</Text>
+                    <Text style={styles.summaryValue}>
+                      {player.matchStrokes == null ? '-' : String(player.matchStrokes)}
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={styles.summaryPill}>
+                    <Text style={styles.summaryLabel}>Playing Hcp</Text>
+                    <Text style={styles.summaryValue}>{player.playingHandicap ?? '-'}</Text>
+                  </View>
+                )}
+              </View>
+              {competition === 'fourball_matchplay' &&
+              lowestRawCourseHandicapIds.has(player.id) ? (
+                <Text style={styles.scratchNote}>Plays off scratch (lowest Course Hcp in field)</Text>
+              ) : null}
             </View>
           ))}
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>
+            {competition === 'fourball_matchplay'
+              ? 'Match strokes summary'
+              : 'Playing handicap summary'}
+          </Text>
+          <Text style={styles.phSummaryIntro}>
+            {competition === 'fourball_matchplay'
+              ? 'Match strokes are used for shot allocation on each hole (not Playing Handicap).'
+              : 'Playing Handicap is derived from raw Course Handicap × allowance, then rounded.'}
+          </Text>
+          {competition === 'fourball_matchplay'
+            ? players.filter((p) => p.matchStrokes != null).length === 0
+              ? (
+                  <Text style={styles.phSummaryEmpty}>
+                    Enter Handicap Index and select a tee to see match strokes.
+                  </Text>
+                )
+              : players
+                  .filter((p) => p.matchStrokes != null)
+                  .map((p) => {
+                  const idx = players.indexOf(p);
+                  const name = p.name?.trim() || `Player ${idx + 1}`;
+                  return (
+                    <View key={p.id} style={styles.phSummaryRow}>
+                      <Text style={styles.phSummaryPlayerName}>{name}</Text>
+                      <Text style={styles.phSummaryDetail}>
+                        Handicap Index: {p.handicapIndex ?? '—'}
+                      </Text>
+                      <Text style={styles.phSummaryDetail}>
+                        Course Handicap: {p.courseHandicap ?? '—'}
+                      </Text>
+                      <Text style={styles.phSummaryDetail}>
+                        Allowance: {parseFloat(allowancePercent) || 0}%
+                      </Text>
+                      <Text style={styles.phSummaryDetail}>
+                        Rounding: {ROUNDING_LABELS[roundingMode]}
+                      </Text>
+                      <Text style={styles.phSummaryFinal}>
+                        {lowestRawCourseHandicapIds.has(p.id)
+                          ? 'Match strokes: 0 (scratch)'
+                          : `Match strokes: ${p.matchStrokes}`}
+                      </Text>
+                    </View>
+                  );
+                  })
+            : strokesPreviewList.length > 0
+              ? strokesPreviewList.map((row) => (
+                  <View key={row.id} style={styles.phSummaryRow}>
+                    <Text style={styles.phSummaryPlayerName}>{row.name}</Text>
+                    <Text style={styles.phSummaryDetail}>
+                      Handicap Index:{' '}
+                      {players.find((pl) => pl.id === row.id)?.handicapIndex ?? '—'}
+                    </Text>
+                    <Text style={styles.phSummaryDetail}>
+                      Course Handicap: {row.courseHandicap ?? '—'}
+                    </Text>
+                    <Text style={styles.phSummaryDetail}>
+                      Allowance: {parseFloat(allowancePercent) || 0}%
+                    </Text>
+                    <Text style={styles.phSummaryDetail}>
+                      Rounding: {ROUNDING_LABELS[roundingMode]}
+                    </Text>
+                    {'rawPlaying' in row && row.rawPlaying != null ? (
+                      <Text style={styles.phSummaryDetail}>
+                        Raw playing (before round): {row.rawPlaying.toFixed(2)}
+                      </Text>
+                    ) : null}
+                    <Text style={styles.phSummaryFinal}>Playing Handicap: {row.final}</Text>
+                  </View>
+                ))
+              : (
+                  <Text style={styles.phSummaryEmpty}>
+                    Enter at least one valid Handicap Index and select a tee to see the handicap
+                    summary.
+                  </Text>
+                )}
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Shots Per Hole Preview</Text>
+          <Text style={styles.phSummaryIntro}>
+            Preview how handicap shots will be allocated across the course for the selected player.
+          </Text>
+
+          {!course ? (
+            <Text style={styles.shotsPreviewEmpty}>
+              Select a course to preview shots per hole.
+            </Text>
+          ) : hasMissingStrokeIndex(course) ? (
+            <Text style={styles.shotsPreviewEmpty}>
+              Shots per hole preview unavailable until all Stroke Index values are entered for this course.
+            </Text>
+          ) : strokesPreviewList.length === 0 ? (
+            <Text style={styles.shotsPreviewEmpty}>
+              Enter a valid Handicap Index and tee selection to preview shots per hole.
+            </Text>
+          ) : !shotsPreviewData ? (
+            <Text style={styles.shotsPreviewEmpty}>
+              Enter a valid allowance to preview shots per hole.
+            </Text>
+          ) : (
+            <>
+              {shotsPreviewData.validPlayers.length > 1 && (
+                <View style={styles.shotsPreviewPlayerChips}>
+                  {shotsPreviewData.validPlayers.map((p) => {
+                    const sel = p.id === shotsPreviewData.selected.id;
+                    return (
+                      <Pressable
+                        key={p.id}
+                        onPress={() => {
+                          hapticTap();
+                          setSelectedShotsPreviewPlayerId(p.id);
+                        }}
+                        style={[styles.shotsPreviewChip, sel && styles.shotsPreviewChipSelected]}
+                      >
+                        <Text style={[styles.shotsPreviewChipText, sel && styles.shotsPreviewChipTextSelected]}>
+                          {p.name}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
+              <Text style={styles.shotsPreviewSummary}>
+                {shotsPreviewData.selected.name} —{' '}
+                {competition === 'fourball_matchplay' ? 'Match strokes' : 'Playing Handicap'}:{' '}
+                {shotsPreviewData.selected.final}
+              </Text>
+              <View style={styles.shotsPreviewGrid}>
+                {shotsPreviewData.holes.map((h) => (
+                  <View
+                    key={h.holeNumber}
+                    style={[
+                      styles.shotsPreviewHole,
+                      h.shots > 0 && styles.shotsPreviewHoleWithShots,
+                    ]}
+                  >
+                    <Text style={styles.shotsPreviewHoleNum}>{h.holeNumber}</Text>
+                    <Text style={styles.shotsPreviewSi}>SI {h.strokeIndex}</Text>
+                    <Text style={[styles.shotsPreviewShots, h.shots > 0 && styles.shotsPreviewShotsActive]}>
+                      {h.shots}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </>
+          )}
         </View>
 
         <Pressable style={styles.primaryBtn} onPress={handleStartRound}>
@@ -381,8 +920,8 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
-    gap: 14,
     paddingBottom: 28,
+    gap: 14,
   },
   headerTitle: {
     color: '#ffffff',
@@ -392,6 +931,55 @@ const styles = StyleSheet.create({
   headerSubtitle: {
     color: '#d1d5db',
     fontSize: 14,
+  },
+  guideCardTitle: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 8,
+  },
+  guideCardBody: {
+    color: '#d1d5db',
+    fontSize: 13,
+    lineHeight: 20,
+    marginBottom: 2,
+  },
+  guideCardNote: {
+    color: '#9ca3af',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 10,
+  },
+  emptyStateCard: {
+    backgroundColor: '#1a221d',
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#4b5563',
+  },
+  emptyStateTitle: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  emptyStateText: {
+    color: '#d1d5db',
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 12,
+  },
+  emptyStateBtn: {
+    backgroundColor: '#16a34a',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignSelf: 'flex-start',
+  },
+  emptyStateBtnText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '800',
   },
   card: {
     backgroundColor: '#0b1510',
@@ -459,6 +1047,106 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginBottom: 6,
     marginTop: 4,
+  },
+  roundingHelper: {
+    color: '#9ca3af',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 10,
+  },
+  roundingExamples: {
+    marginTop: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    backgroundColor: '#101915',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#2e3b33',
+  },
+  roundingExamplesTitle: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  roundingExample: {
+    color: '#9ca3af',
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 2,
+  },
+  roundingPreview: {
+    marginTop: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    backgroundColor: '#101915',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#2e3b33',
+  },
+  roundingPreviewTitle: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  roundingPreviewHelper: {
+    color: '#9ca3af',
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: 10,
+  },
+  roundingPreviewRow: {
+    color: '#d1d5db',
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 2,
+  },
+  roundingPreviewModes: {
+    marginTop: 8,
+  },
+  roundingPreviewModeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    marginBottom: 4,
+  },
+  roundingPreviewModeSelected: {
+    backgroundColor: '#16a34a',
+    borderWidth: 1,
+    borderColor: '#22c55e',
+  },
+  roundingPreviewModeLabel: {
+    color: '#d1d5db',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  roundingPreviewModeLabelSelected: {
+    color: '#ffffff',
+    fontWeight: '800',
+  },
+  roundingPreviewModeValue: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  roundingPreviewModeValueSelected: {
+    color: '#ffffff',
+  },
+  roundingPreviewEmpty: {
+    color: '#9ca3af',
+    fontSize: 12,
+    lineHeight: 18,
+    fontStyle: 'italic',
+  },
+  roundingNote: {
+    color: '#9ca3af',
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 10,
   },
   input: {
     backgroundColor: '#101915',
@@ -534,6 +1222,155 @@ const styles = StyleSheet.create({
   removeText: {
     color: '#d1d5db',
     fontWeight: '700',
+  },
+  playerSummaryRow: {
+    marginTop: 12,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  playerSummaryRowThree: {
+    flexWrap: 'wrap',
+  },
+  scratchNote: {
+    marginTop: 8,
+    color: '#4ade80',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  summaryPill: {
+    flex: 1,
+    backgroundColor: '#101915',
+    borderWidth: 1,
+    borderColor: '#2e3b33',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+  },
+  summaryLabel: {
+    color: '#9ca3af',
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  summaryValue: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  phSummaryIntro: {
+    color: '#9ca3af',
+    fontSize: 12,
+    lineHeight: 17,
+    marginBottom: 12,
+  },
+  phSummaryRow: {
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    marginBottom: 10,
+    backgroundColor: '#101915',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#2e3b33',
+  },
+  phSummaryPlayerName: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  phSummaryDetail: {
+    color: '#d1d5db',
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 2,
+  },
+  phSummaryFinal: {
+    color: '#16a34a',
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 6,
+  },
+  phSummaryEmpty: {
+    color: '#9ca3af',
+    fontSize: 12,
+    lineHeight: 18,
+    fontStyle: 'italic',
+  },
+  shotsPreviewEmpty: {
+    color: '#9ca3af',
+    fontSize: 12,
+    lineHeight: 18,
+    fontStyle: 'italic',
+  },
+  shotsPreviewPlayerChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 10,
+  },
+  shotsPreviewChip: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#2e3b33',
+    backgroundColor: '#101915',
+  },
+  shotsPreviewChipSelected: {
+    backgroundColor: '#16a34a',
+    borderColor: '#16a34a',
+  },
+  shotsPreviewChipText: {
+    color: '#d1d5db',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  shotsPreviewChipTextSelected: {
+    color: '#ffffff',
+  },
+  shotsPreviewSummary: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 10,
+  },
+  shotsPreviewGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  shotsPreviewHole: {
+    width: 46,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    backgroundColor: '#101915',
+    borderWidth: 1,
+    borderColor: '#2e3b33',
+    alignItems: 'center',
+  },
+  shotsPreviewHoleWithShots: {
+    backgroundColor: '#0f2d1a',
+    borderColor: '#16a34a',
+  },
+  shotsPreviewHoleNum: {
+    color: '#9ca3af',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  shotsPreviewSi: {
+    color: '#d1d5db',
+    fontSize: 10,
+    marginTop: 1,
+  },
+  shotsPreviewShots: {
+    color: '#9ca3af',
+    fontSize: 12,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  shotsPreviewShotsActive: {
+    color: '#16a34a',
   },
   primaryBtn: {
     backgroundColor: '#16a34a',

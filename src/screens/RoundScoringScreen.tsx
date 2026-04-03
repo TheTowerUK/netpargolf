@@ -20,10 +20,16 @@ import {
   type PersistedRound,
 } from '../storage/roundStorage';
 import type { Course } from '../core/course';
+import { hasMissingStrokeIndex } from '../utils/courseValidation';
+import StrokeIndexWarningBanner from '../components/StrokeIndexWarningBanner';
+import {
+  getMatchHoleOutcome,
+  computeMatchSummary,
+  strokesBasisForAllocation,
+  type MatchHoleOutcome,
+} from '../utils/scoreboardHelpers';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RoundScoring'>;
-
-type MatchHoleOutcome = 'win' | 'loss' | 'halved' | null;
 
 function parseScore(text: string): number | null {
   const trimmed = text.trim();
@@ -31,17 +37,6 @@ function parseScore(text: string): number | null {
   const n = Number(trimmed);
   if (!Number.isFinite(n)) return null;
   return n < 1 ? null : Math.floor(n);
-}
-
-function computePlayingHandicap(
-  courseHandicap: number,
-  allowancePercent: number,
-  roundingMode: 'floor' | 'round' | 'ceil'
-): number {
-  const raw = courseHandicap * (allowancePercent / 100);
-  if (roundingMode === 'floor') return Math.floor(raw);
-  if (roundingMode === 'ceil') return Math.ceil(raw);
-  return Math.round(raw);
 }
 
 function shotsReceivedForHole(
@@ -60,35 +55,15 @@ function computeStablefordPoints(params: {
   gross: number | null;
   par: number | null;
   strokeIndex: number | null;
-  courseHandicap: number | null;
-  allowancePercent: number;
-  roundingMode: 'floor' | 'round' | 'ceil';
+  strokesBasis: number | null;
 }): number | null {
-  const {
-    gross,
-    par,
-    strokeIndex,
-    courseHandicap,
-    allowancePercent,
-    roundingMode,
-  } = params;
+  const { gross, par, strokeIndex, strokesBasis } = params;
 
-  if (
-    gross == null ||
-    par == null ||
-    strokeIndex == null ||
-    courseHandicap == null
-  ) {
+  if (gross == null || par == null || strokeIndex == null || strokesBasis == null) {
     return null;
   }
 
-  const playingHandicap = computePlayingHandicap(
-    courseHandicap,
-    allowancePercent,
-    roundingMode
-  );
-
-  const shots = shotsReceivedForHole(playingHandicap, strokeIndex);
+  const shots = shotsReceivedForHole(strokesBasis, strokeIndex);
   const netScore = gross - shots;
   const points = 2 + (par - netScore);
 
@@ -135,98 +110,11 @@ function getHoleMeta(round: PersistedRound, holeNumber: number, course: Course |
   };
 }
 
-function getMatchHoleOutcome(
-  hole: PersistedRound['scores'][number] | null | undefined,
-  playerId: string,
-  opponentId: string
-): MatchHoleOutcome {
-  if (!hole) return null;
-
-  const playerGross = hole.grossByPlayerId?.[playerId] ?? null;
-  const opponentGross = hole.grossByPlayerId?.[opponentId] ?? null;
-
-  if (playerGross == null || opponentGross == null) return null;
-  if (playerGross < opponentGross) return 'win';
-  if (playerGross > opponentGross) return 'loss';
-  return 'halved';
-}
-
 function formatMatchHoleOutcome(outcome: MatchHoleOutcome): string {
   if (outcome === 'win') return 'Win';
   if (outcome === 'loss') return 'Loss';
   if (outcome === 'halved') return 'Halved';
   return '—';
-}
-
-function computeMatchSummary(round: PersistedRound): {
-  leaderPlayerId: string | null;
-  leaderName: string | null;
-  lead: number;
-  holesCompleted: number;
-  holesRemaining: number;
-  statusText: string;
-  isDormieLike: boolean;
-} {
-  const [playerA, playerB] = round.players;
-
-  if (!playerA || !playerB) {
-    return {
-      leaderPlayerId: null,
-      leaderName: null,
-      lead: 0,
-      holesCompleted: 0,
-      holesRemaining: 18,
-      statusText: 'Add 2 players for matchplay',
-      isDormieLike: false,
-    };
-  }
-
-  let aWins = 0;
-  let bWins = 0;
-  let holesCompleted = 0;
-
-  for (const hole of round.scores) {
-    const a = hole.grossByPlayerId?.[playerA.id] ?? null;
-    const b = hole.grossByPlayerId?.[playerB.id] ?? null;
-
-    if (a == null || b == null) continue;
-
-    holesCompleted += 1;
-    if (a < b) aWins += 1;
-    else if (b < a) bWins += 1;
-  }
-
-  const diff = aWins - bWins;
-  const holesRemaining = Math.max(0, 18 - holesCompleted);
-  const lead = Math.abs(diff);
-
-  if (diff === 0) {
-    return {
-      leaderPlayerId: null,
-      leaderName: null,
-      lead: 0,
-      holesCompleted,
-      holesRemaining,
-      statusText: holesCompleted === 0 ? 'All Square' : 'All Square',
-      isDormieLike: false,
-    };
-  }
-
-  const leader = diff > 0 ? playerA : playerB;
-  const isClosedOut = lead > holesRemaining;
-  const isDormieLike = lead === holesRemaining && holesRemaining > 0;
-
-  return {
-    leaderPlayerId: leader.id,
-    leaderName: leader.name || 'Leader',
-    lead,
-    holesCompleted,
-    holesRemaining,
-    statusText: isClosedOut
-      ? `${leader.name || 'Leader'} ${lead} & ${holesRemaining}`
-      : `${leader.name || 'Leader'} ${lead} Up`,
-    isDormieLike,
-  };
 }
 
 export default function RoundScoringScreen({ navigation }: Props) {
@@ -259,7 +147,9 @@ export default function RoundScoringScreen({ navigation }: Props) {
     };
   }, [navigation]);
 
-  const isMatchplay = round?.competition === 'matchplay';
+  const isMatchplay =
+    round?.competition === 'matchplay' ||
+    round?.competition === 'fourball_matchplay';
 
   const currentHoleData = useMemo(() => {
     if (!round) return null;
@@ -341,9 +231,7 @@ export default function RoundScoringScreen({ navigation }: Props) {
           gross,
           par,
           strokeIndex,
-          courseHandicap: player.courseHandicap,
-          allowancePercent: round.allowancePercent,
-          roundingMode: round.roundingMode,
+          strokesBasis: strokesBasisForAllocation(player, round),
         });
       }
 
@@ -412,6 +300,10 @@ export default function RoundScoringScreen({ navigation }: Props) {
           {round.competition.replaceAll('_', ' ')} · {round.allowancePercent}% ·{' '}
           {round.roundingMode}
         </Text>
+
+        {hasMissingStrokeIndex(course) ? (
+          <StrokeIndexWarningBanner onPressFix={() => navigation.navigate('CourseSetup')} />
+        ) : null}
 
         <View style={styles.holeHero}>
           <Text style={styles.holeHeroLabel}>CURRENT HOLE</Text>
@@ -505,6 +397,9 @@ export default function RoundScoringScreen({ navigation }: Props) {
                   <Text style={styles.playerName}>{player.name || 'Player'}</Text>
                   <Text style={styles.playerSub}>
                     HI: {player.handicapIndex ?? '-'} · CH: {player.courseHandicap ?? '-'}
+                    {round.competition === 'fourball_matchplay'
+                      ? ` · MS: ${player.matchStrokes ?? '-'}`
+                      : ` · PH: ${player.playingHandicap ?? '-'}`}
                   </Text>
                 </View>
 

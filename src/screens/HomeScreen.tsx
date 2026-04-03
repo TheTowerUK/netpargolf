@@ -44,6 +44,17 @@ export default function HomeScreen({ navigation }: Props) {
       </View>
 
       <View style={styles.card}>
+        <Text style={styles.cardTitle}>Getting started</Text>
+        <Text style={styles.guideStep}>1. Choose or add your course</Text>
+        <Text style={styles.guideStep}>2. Check par and Stroke Index values</Text>
+        <Text style={styles.guideStep}>3. Set up your round and players</Text>
+        <Text style={styles.guideStep}>4. Start scoring</Text>
+        <Text style={styles.guideNote}>
+          If Stroke Index values are missing, update them in Course Setup before playing for accurate handicap scoring.
+        </Text>
+      </View>
+
+      <View style={styles.card}>
         <Text style={styles.cardTitle}>Quick Start</Text>
 
         <PrimaryButton
@@ -106,6 +117,18 @@ export default function HomeScreen({ navigation }: Props) {
           style={styles.secondaryBtnRow}
         />
 
+        <View style={{ height: 10 }} />
+
+        <PrimaryButton
+          title="About NetParGolf"
+          onPress={() => {
+            hapticTap();
+            navigation.navigate('About');
+          }}
+          variant="secondary"
+          style={styles.secondaryBtnRow}
+        />
+
         <Text style={styles.hint}>
           Tip: Live Scoring autosaves your round. Scoreboard shows totals and lets you continue.
         </Text>
@@ -141,6 +164,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card,
   },
   cardTitle: { fontSize: 16, fontWeight: '900', marginBottom: 10, color: colors.textPrimary },
+  guideStep: { fontSize: 14, color: colors.textPrimary, lineHeight: 22, marginBottom: 2 },
+  guideNote: { fontSize: 12, color: colors.textSecondary, lineHeight: 17, marginTop: 10 },
 
   btnPressed: { transform: [{ scale: 0.98 }], opacity: 0.9 },
 

@@ -4,7 +4,11 @@ export type ScoreboardPlayer = {
   id: string;
   name: string;
   handicapIndex: number | null;
+  rawCourseHandicap: number | null;
   courseHandicap: number | null;
+  rawPlayingHandicap: number | null;
+  playingHandicap: number | null;
+  matchStrokes: number | null;
 };
 
 export type ScoreboardHole = {
@@ -32,7 +36,11 @@ export function mapPersistedRoundToScoreboard(round: PersistedRound): Scoreboard
       id: p.id,
       name: p.name,
       handicapIndex: p.handicapIndex,
+      rawCourseHandicap: p.rawCourseHandicap,
       courseHandicap: p.courseHandicap,
+      rawPlayingHandicap: p.rawPlayingHandicap,
+      playingHandicap: p.playingHandicap,
+      matchStrokes: p.matchStrokes,
     })),
     holes: round.scores.map((s) => ({
       holeNumber: s.holeNumber,

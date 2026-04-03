@@ -30,16 +30,20 @@ export type ScoringBreakdown = {
   points: number;   // 0..4
 };
 
-/** Playing handicap = courseHandicap × (allowancePercent/100) rounded. */
+/** Storage uses 'round', scoring uses 'nearest'. Accepts both for compatibility. */
+export type RoundingModeInput = RoundingMode | 'round';
+
+/** Playing handicap = courseHandicap × (allowancePercent/100) rounded. Single source of truth. */
 export function computePlayingHandicap(
   courseHandicap: number,
   allowancePercent: number,
-  roundingMode: RoundingMode
+  roundingMode: RoundingModeInput
 ): number {
   const raw = courseHandicap * (allowancePercent / 100);
-  if (roundingMode === 'nearest') return Math.round(raw);
-  if (roundingMode === 'floor') return Math.floor(raw);
-  if (roundingMode === 'ceil') return Math.ceil(raw);
+  const m = roundingMode === 'round' ? 'nearest' : roundingMode;
+  if (m === 'nearest') return Math.round(raw);
+  if (m === 'floor') return Math.floor(raw);
+  if (m === 'ceil') return Math.ceil(raw);
   return Math.round(raw);
 }
 

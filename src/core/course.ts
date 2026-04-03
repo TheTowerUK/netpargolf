@@ -6,6 +6,15 @@ export type CourseHole = {
   strokeIndex: number; // 1..18
 };
 
+export type TeeColor = 'White' | 'Yellow' | 'Red' | 'Blue' | 'Winter';
+
+export type CourseTee = {
+  name: TeeColor;
+  par: number;
+  courseRating: number;
+  slopeRating: number;
+};
+
 export type StrokeIndexSource = 'api' | 'default';
 export type ScorecardSource = 'golfcourseapi' | 'bthree' | 'default';
 
@@ -13,6 +22,8 @@ export type Course = {
   id: string;
   name: string;
   holes: CourseHole[]; // length 18 (padded if API returns fewer)
+  tees?: CourseTee[];
+  updatedAt?: string;
   /** Shown when holes are partial, duplicated from 9, or defaulted */
   holesNote?: string;
   scorecardSource?: ScorecardSource;
@@ -35,6 +46,11 @@ export function makeDefaultCourse(): Course {
       par: 4,
       strokeIndex: i + 1, // placeholder
     })),
+    tees: [
+      { name: 'White', par: 72, courseRating: 72, slopeRating: 113 },
+      { name: 'Yellow', par: 72, courseRating: 72, slopeRating: 113 },
+      { name: 'Red', par: 72, courseRating: 72, slopeRating: 113 },
+    ],
     scorecardSource: 'default',
     strokeIndexSource: 'default',
   };

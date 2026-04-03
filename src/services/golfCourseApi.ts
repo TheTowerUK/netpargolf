@@ -1,5 +1,5 @@
 // src/services/golfCourseApi.ts
-import { Course, CourseHole, isValidCourse, makeDefaultCourse } from '../core/course';
+import { Course, CourseHole, CourseTee, TeeColor, isValidCourse, makeDefaultCourse } from '../core/course';
 import { loadCourseDetailsCache, saveCourseDetailsCache } from '../storage/courseDetailsCache';
 import type {
   GolfCourseApiCourse,
@@ -117,6 +117,49 @@ function toCourseHole(h: HoleRow, idx: number): CourseHole {
 
 function parseHoleArray(arr: any[]): CourseHole[] {
   return arr.map((h: any, idx: number) => toCourseHole(h, idx));
+}
+
+function normaliseTeeColor(name: string): TeeColor | null {
+  const lower = name.toLowerCase();
+  if (lower.includes('white')) return 'White';
+  if (lower.includes('yellow')) return 'Yellow';
+  if (lower.includes('red')) return 'Red';
+  if (lower.includes('blue')) return 'Blue';
+  if (lower.includes('winter')) return 'Winter';
+  return null;
+}
+
+function extractCourseTees(raw: any): CourseTee[] {
+  const courseRaw = raw?.course ?? raw;
+  const teeBoxes = getTeeBoxes(courseRaw);
+  const tees: CourseTee[] = [];
+
+  for (const tee of teeBoxes) {
+    const teeName = String(tee?.tee_name ?? tee?.teeName ?? '').trim();
+    const name = normaliseTeeColor(teeName);
+    if (!name) continue;
+
+    const slopeRating = Number(tee?.slope_rating ?? tee?.slopeRating);
+    const courseRating = Number(tee?.course_rating ?? tee?.courseRating);
+    const par =
+      Number(tee?.par_total) ||
+      (Array.isArray(tee?.holes)
+        ? tee.holes.reduce((sum: number, hole: any) => sum + Number(hole?.par ?? 0), 0)
+        : 0);
+
+    if (!Number.isFinite(slopeRating) || !Number.isFinite(courseRating) || !Number.isFinite(par)) {
+      continue;
+    }
+
+    tees.push({
+      name,
+      par,
+      courseRating,
+      slopeRating,
+    });
+  }
+
+  return tees;
 }
 
 /** Normalize to 18 holes: duplicate 9, pad partial, take first 18 of 27+. */
@@ -246,6 +289,7 @@ export function mapApiCourseToCourse(courseDetails: GolfCourseApiCourse | any): 
   const name = String(courseRaw?.course_name ?? courseRaw?.club_name ?? 'Course');
 
   const { holes, note, scorecardSource, strokeIndexSource } = extractHoles(courseDetails);
+  const tees = extractCourseTees(courseDetails);
 
   const defaultNote = 'Hole-by-hole data not available — using default scorecard.';
   const usedDefaultHoles = note === defaultNote;
@@ -255,6 +299,7 @@ export function mapApiCourseToCourse(courseDetails: GolfCourseApiCourse | any): 
     id,
     name,
     holes,
+    ...(tees.length ? { tees } : {}),
     ...(note ? { holesNote: note } : {}),
     scorecardSource,
     strokeIndexSource,
