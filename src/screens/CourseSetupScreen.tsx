@@ -324,7 +324,7 @@ export default function CourseSetupScreen() {
       await setActiveCourseId(id);
       hapticSuccess();
       toast.show('Course saved', 'success');
-      navigation.navigate('RoundSetup');
+      navigation.navigate('CompetitionSelect');
     } catch {
       hapticError();
       toast.show('Could not save course. Try again.', 'error');

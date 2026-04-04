@@ -13,10 +13,23 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigations/types';
 import type { Course } from '../core/course';
+import { buildCompetitionScorecardHtml } from '../core/scoring/scorecardExport';
+import {
+  buildBetterballStablefordScorecardSummary,
+  buildFourballMatchplayScorecardSummary,
+  buildIndividualStablefordScorecardSummary,
+  buildScorecardDateLabel,
+  buildScorecardPlayerRows,
+  buildScorecardTeeLine,
+  buildSinglesMatchplayScorecardSummary,
+  formatScorecardCompetitionLabel,
+  getBetterballStablefordCountingPointsByHole,
+  getFourballMatchplayHoleColumns,
+  getSinglesMatchplayHoleColumn,
+} from '../core/scoring/scorecardDisplay';
+import { getFourballSideRosterLines } from '../core/scoring/matchplayDisplay';
 import { hasMissingStrokeIndex } from '../utils/courseValidation';
 import StrokeIndexWarningBanner from '../components/StrokeIndexWarningBanner';
-import { getGrossForHole, strokesBasisForAllocation } from '../utils/scoreboardHelpers';
-import { scoreHoleOptionA } from '../core/scoring';
 import { loadCourse } from '../storage/courseStorage';
 import { loadCurrentRound, type PersistedRound } from '../storage/roundStorage';
 import { getRoundById } from '../storage/roundHistoryStorage';
@@ -26,42 +39,6 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 
 const HOLES = Array.from({ length: 18 }, (_, i) => i + 1);
-
-/** Strokes received on a hole based on handicap and stroke index. Correct golf math. */
-function strokesReceivedOnHole(handicap: number, strokeIndex: number): number {
-  if (!handicap || handicap <= 0) return 0;
-
-  const fullRounds = Math.floor(handicap / 18);
-  const remainder = handicap % 18;
-
-  let strokes = fullRounds;
-
-  if (strokeIndex <= remainder) {
-    strokes += 1;
-  }
-
-  return strokes;
-}
-
-type Row = {
-  id: string;
-  name: string;
-  courseHandicap: number; // for net calc
-  playingHandicap: number;
-  scores: (string | number)[];
-  out: number;
-  in_: number;
-  total: number;
-  netOut: number;
-  netIn: number;
-  netTotal: number;
-  pointsPerHole: (number | null)[];
-  pointsOut: number;
-  pointsIn: number;
-  pointsTotal: number;
-  strokesPerHole: number[];
-  netsPerHole: (number | null)[];
-};
 
 const TIP_KEY_PAR_SI = '@netpargolf/tip_par_si_edit:v1';
 
@@ -123,114 +100,102 @@ export default function ScorecardScreen({ route }: Props) {
 
   const courseReady = !!course && Array.isArray(course.holes) && course.holes.length === 18;
 
-  const rows: Row[] = useMemo(() => {
-    const players = round?.players ?? [];
-    const courseHoles = course?.holes ?? [];
+  const rows = useMemo(
+    () => buildScorecardPlayerRows(round, course, courseReady),
+    [round, course, courseReady]
+  );
 
-    return players.slice(0, 4).map((p) => {
-      const handicapNum =
-        p.courseHandicap != null && Number.isFinite(p.courseHandicap) ? p.courseHandicap : 0;
-      const rmRaw = round?.roundingMode ?? 'round';
-      const rm: 'nearest' | 'floor' | 'ceil' =
-        rmRaw === 'floor' || rmRaw === 'ceil' ? rmRaw : 'nearest';
-      const basis =
-        round != null ? strokesBasisForAllocation(p, round) : null;
-      const playingHandicap = basis != null && Number.isFinite(basis) ? basis : 0;
+  const competitionUi = useMemo(() => {
+    type Summary = { heading: string; subtitle: string; lines: string[] };
+    const base = {
+      showPoints: true,
+      showNet: true,
+      formatSubtitle: '',
+      summary: null as Summary | null,
+      roster: null as { sideALine: string; sideBLine: string } | null,
+      extraRows: [] as { label: string; valuesByHole: string[] }[],
+    };
 
-      const scores = HOLES.map((h) => {
-        const gross = getGrossForHole(round, h, p.id);
-        return typeof gross === 'number' ? gross : '';
-      });
+    if (!round) return base;
 
-      let strokesPerHole: number[] = [];
-
-      let netsPerHole: (number | null)[];
-      let netOut: number;
-      let netIn: number;
-      let netTotal: number;
-      let pointsPerHole: (number | null)[];
-      let pointsOut = 0;
-      let pointsIn = 0;
-      let pointsTotal = 0;
-
-      if (courseReady && courseHoles.length === 18) {
-        strokesPerHole = HOLES.map((h) => {
-          const holeData = courseHoles[h - 1];
-          const si = holeData?.strokeIndex;
-          if (si == null || !Number.isFinite(si)) return 0;
-          return strokesReceivedOnHole(playingHandicap, si);
-        });
-
-        netsPerHole = scores.map((gross, i) => {
-          if (typeof gross !== 'number') return null;
-          const strokes = strokesPerHole[i];
-          return gross - strokes;
-        });
-
-        netOut = netsPerHole.slice(0, 9).reduce((a, v) => a + (v ?? 0), 0);
-        netIn = netsPerHole.slice(9, 18).reduce((a, v) => a + (v ?? 0), 0);
-        netTotal = netOut + netIn;
-
-        pointsPerHole = HOLES.map((h) => {
-          const i = h - 1;
-          const gross = scores[i];
-          if (typeof gross !== 'number') return null;
-
-          const holeData = courseHoles[i];
-          const par = holeData?.par;
-          const si = holeData?.strokeIndex;
-          if (!Number.isFinite(par) || !Number.isFinite(si)) return null;
-
-          try {
-            const b = scoreHoleOptionA({
-              courseHandicap: playingHandicap,
-              allowancePercent: 1,
-              roundingMode: rm,
-              hole: { par: par as number, strokeIndex: si as number },
-              gross,
-            });
-            return b.points;
-          } catch {
-            return null;
-          }
-        });
-
-        pointsOut = pointsPerHole.slice(0, 9).reduce((a, v) => a + (v ?? 0), 0);
-        pointsIn = pointsPerHole.slice(9, 18).reduce((a, v) => a + (v ?? 0), 0);
-        pointsTotal = pointsOut + pointsIn;
-      } else {
-        netsPerHole = scores.map(() => null);
-        netOut = 0;
-        netIn = 0;
-        netTotal = 0;
-        pointsPerHole = scores.map(() => null);
+    switch (round.competition) {
+      case 'individual_stableford': {
+        const s = buildIndividualStablefordScorecardSummary(round, course, rows);
+        return {
+          ...base,
+          formatSubtitle: 'Individual competition · Stableford points',
+          summary: { heading: s.title, subtitle: s.subtitle, lines: s.lines },
+        };
       }
-
-      const out = scores.slice(0, 9).reduce<number>((a, v) => a + (typeof v === 'number' ? v : 0), 0);
-      const in_ = scores.slice(9, 18).reduce<number>((a, v) => a + (typeof v === 'number' ? v : 0), 0);
-      const total = out + in_;
-
-      return {
-        id: p.id,
-        name: p.name,
-        courseHandicap: handicapNum,
-        playingHandicap,
-        scores,
-        out,
-        in_,
-        total,
-        netOut,
-        netIn,
-        netTotal,
-        pointsPerHole,
-        pointsOut,
-        pointsIn,
-        pointsTotal,
-        strokesPerHole,
-        netsPerHole,
-      };
-    });
-  }, [round, course, courseReady]);
+      case 'betterball_stableford': {
+        const counting = getBetterballStablefordCountingPointsByHole(round, course);
+        const s = buildBetterballStablefordScorecardSummary(round, course);
+        const roster =
+          round.players.length === 4 ? getFourballSideRosterLines(round.players) : null;
+        return {
+          ...base,
+          formatSubtitle: 'Side-based competition · best Stableford points per hole per side',
+          summary: { heading: s.title, subtitle: s.subtitle, lines: s.lines },
+          roster,
+          extraRows: [
+            {
+              label: 'Side A best (pts)',
+              valuesByHole: counting.sideA.map((v) => (v == null ? '—' : String(v))),
+            },
+            {
+              label: 'Side B best (pts)',
+              valuesByHole: counting.sideB.map((v) => (v == null ? '—' : String(v))),
+            },
+          ],
+        };
+      }
+      case 'singles_matchplay': {
+        const cols = getSinglesMatchplayHoleColumn(round, course);
+        const sm = buildSinglesMatchplayScorecardSummary(round, course);
+        return {
+          ...base,
+          showPoints: false,
+          formatSubtitle: 'Head-to-head matchplay · lowest net wins each hole',
+          summary: { heading: sm.statusLine, subtitle: '', lines: sm.lines },
+          extraRows: [
+            {
+              label: 'Hole result',
+              valuesByHole: cols.map((c) => c.resultLabel),
+            },
+          ],
+        };
+      }
+      case 'fourball_betterball_matchplay': {
+        const fb = getFourballMatchplayHoleColumns(round, course);
+        const fm = buildFourballMatchplayScorecardSummary(round, course);
+        const roster =
+          round.players.length === 4 ? getFourballSideRosterLines(round.players) : null;
+        return {
+          ...base,
+          showPoints: false,
+          formatSubtitle: 'Side vs side matchplay · best net ball per hole',
+          summary: { heading: fm.statusLine, subtitle: '', lines: fm.lines },
+          roster,
+          extraRows: [
+            {
+              label: 'Side A best net',
+              valuesByHole: fb.bestNetA.map((v) => (v == null ? '—' : String(v))),
+            },
+            {
+              label: 'Side B best net',
+              valuesByHole: fb.bestNetB.map((v) => (v == null ? '—' : String(v))),
+            },
+            {
+              label: 'Hole result',
+              valuesByHole: fb.resultLabel,
+            },
+          ],
+        };
+      }
+      default:
+        return base;
+    }
+  }, [round, course, rows]);
 
   const courseName = course?.name ?? 'No course selected';
 
@@ -240,36 +205,19 @@ export default function ScorecardScreen({ route }: Props) {
   const netTotal = rows.reduce((sum, r) => sum + r.netTotal, 0);
 
   const onPrintOrExport = async () => {
-    const html = buildScorecardHtml({
+    if (!round) return;
+    const html = buildCompetitionScorecardHtml({
       courseName,
       courseReady,
-      meta: {
-        competitionName: round?.competition
-          ? String(round.competition).replace(/_/g, ' ')
-          : undefined,
-        competitionDate: undefined,
-        tee: undefined,
-        marker: undefined,
+      course,
+      round,
+      rows,
+      theme: {
+        primary: colors.primary,
+        primarySoft: colors.primarySoft,
+        card: colors.card,
+        textSecondary: colors.textSecondary,
       },
-      players: rows.map((r) => ({
-        name: r.name,
-        handicap: r.playingHandicap,
-        scores: r.scores,
-        netsPerHole: r.netsPerHole,
-        out: r.out,
-        in_: r.in_,
-        total: r.total,
-        netOut: r.netOut,
-        netIn: r.netIn,
-        netTotal: r.netTotal,
-        pointsOut: r.pointsOut,
-        pointsIn: r.pointsIn,
-        pointsTotal: r.pointsTotal,
-      })),
-      frontNineTotal,
-      backNineTotal,
-      roundTotal,
-      netTotal,
     });
 
     if (Platform.OS === 'web') {
@@ -297,6 +245,18 @@ export default function ScorecardScreen({ route }: Props) {
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Scorecard</Text>
           <Text style={styles.subTitle}>{courseName}</Text>
+          {round ? (
+            <Text style={styles.compMetaLine}>
+              {formatScorecardCompetitionLabel(round.competition)}
+              {' · '}
+              {buildScorecardDateLabel(round)}
+              {' · Tee: '}
+              {buildScorecardTeeLine(round)}
+            </Text>
+          ) : null}
+          {hasData && competitionUi.formatSubtitle ? (
+            <Text style={styles.formatSub}>{competitionUi.formatSubtitle}</Text>
+          ) : null}
 
           <View style={styles.sideToggle}>
             <Pressable
@@ -341,7 +301,7 @@ export default function ScorecardScreen({ route }: Props) {
           <Pressable
             style={({ pressed }) => [styles.btn, styles.btnPrimary, pressed && hasData && styles.btnPressed]}
             onPress={() => { hapticTap(); onPrintOrExport(); }}
-            disabled={!hasData}
+            disabled={!hasData || !round}
           >
             <Text style={[styles.btnText, styles.btnPrimaryText]}>
               {Platform.OS === 'web' ? 'Print' : 'Export PDF'}
@@ -419,6 +379,28 @@ export default function ScorecardScreen({ route }: Props) {
         </View>
       ) : null}
 
+      {hasData && competitionUi.roster ? (
+        <View style={styles.rosterBlock}>
+          <Text style={styles.rosterLine}>{competitionUi.roster.sideALine}</Text>
+          <Text style={styles.rosterLine}>{competitionUi.roster.sideBLine}</Text>
+        </View>
+      ) : null}
+
+      {hasData && competitionUi.summary ? (
+        <View style={styles.summaryBlock}>
+          <Text style={styles.summaryHeading}>Result</Text>
+          <Text style={styles.summaryTitle}>{competitionUi.summary.heading}</Text>
+          {competitionUi.summary.subtitle ? (
+            <Text style={styles.summarySubtitle}>{competitionUi.summary.subtitle}</Text>
+          ) : null}
+          {competitionUi.summary.lines.map((line, i) => (
+            <Text key={i} style={styles.summaryLine}>
+              • {line}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+
       {!hasData ? (
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>No scores yet</Text>
@@ -448,12 +430,12 @@ export default function ScorecardScreen({ route }: Props) {
             <View style={[styles.cell, styles.totalCell]}>
               <Text style={styles.headerText}>{side === 'front' ? 'OUT' : 'IN'}</Text>
             </View>
-            {courseReady ? (
+            {courseReady && competitionUi.showNet ? (
               <View style={[styles.cell, styles.totalCell]}>
                 <Text style={styles.headerText}>{side === 'front' ? 'NET OUT' : 'NET IN'}</Text>
               </View>
             ) : null}
-            {courseReady ? (
+            {courseReady && competitionUi.showPoints ? (
               <View style={[styles.cell, styles.ptsCell]}>
                 <Text style={styles.headerText}>PTS</Text>
               </View>
@@ -478,7 +460,10 @@ export default function ScorecardScreen({ route }: Props) {
                 return (
                   <View key={h} style={[styles.cell, styles.holeCell]}>
                     <Text style={styles.scoreText}>{typeof v === 'number' ? String(v) : ''}</Text>
-                    {courseReady && typeof v === 'number' && r.netsPerHole[i] != null ? (
+                    {courseReady &&
+                    competitionUi.showNet &&
+                    typeof v === 'number' &&
+                    r.netsPerHole[i] != null ? (
                       <Text style={styles.netSubtext}>{r.netsPerHole[i]}</Text>
                     ) : null}
                   </View>
@@ -488,15 +473,42 @@ export default function ScorecardScreen({ route }: Props) {
               <View style={[styles.cell, styles.totalCell]}>
                 <Text style={styles.totalText}>{side === 'front' ? r.out : r.in_}</Text>
               </View>
-              {courseReady ? (
+              {courseReady && competitionUi.showNet ? (
                 <View style={[styles.cell, styles.totalCell]}>
                   <Text style={styles.totalText}>{side === 'front' ? r.netOut : r.netIn}</Text>
                 </View>
               ) : null}
-              {courseReady ? (
+              {courseReady && competitionUi.showPoints ? (
                 <View style={[styles.cell, styles.ptsCell]}>
                   <Text style={styles.totalText}>{side === 'front' ? r.pointsOut : r.pointsIn}</Text>
                 </View>
+              ) : null}
+            </View>
+          ))}
+
+          {competitionUi.extraRows.map((er, eri) => (
+            <View
+              key={`${er.label}-${eri}`}
+              style={[styles.row, styles.extraRow, eri % 2 === 1 ? styles.extraRowAlt : null]}
+            >
+              <View style={[styles.cell, styles.playerCell]}>
+                <Text style={styles.extraRowLabel}>{er.label}</Text>
+              </View>
+              <View style={[styles.cell, styles.phCell]} />
+              {holesShown.map((h) => {
+                const v = er.valuesByHole[h - 1] ?? '—';
+                return (
+                  <View key={h} style={[styles.cell, styles.holeCell]}>
+                    <Text style={styles.extraRowCellText}>{v}</Text>
+                  </View>
+                );
+              })}
+              <View style={[styles.cell, styles.totalCell]} />
+              {courseReady && competitionUi.showNet ? (
+                <View style={[styles.cell, styles.totalCell]} />
+              ) : null}
+              {courseReady && competitionUi.showPoints ? (
+                <View style={[styles.cell, styles.ptsCell]} />
               ) : null}
             </View>
           ))}
@@ -516,7 +528,7 @@ export default function ScorecardScreen({ route }: Props) {
               <Text style={styles.totalText}>{side === 'front' ? frontNineTotal : backNineTotal}</Text>
             </View>
 
-            {courseReady ? (
+            {courseReady && competitionUi.showNet ? (
               <View style={[styles.cell, styles.totalCell]}>
                 <Text style={styles.totalText}>
                   {side === 'front'
@@ -525,7 +537,7 @@ export default function ScorecardScreen({ route }: Props) {
                 </Text>
               </View>
             ) : null}
-            {courseReady ? (
+            {courseReady && competitionUi.showPoints ? (
               <View style={[styles.cell, styles.ptsCell]}>
                 <Text style={styles.totalText}>
                   {side === 'front'
@@ -544,383 +556,24 @@ export default function ScorecardScreen({ route }: Props) {
             <Text style={styles.overallLabel}>GROSS TOTAL</Text>
             <Text style={styles.overallValue}>{roundTotal}</Text>
           </View>
-          {courseReady ? (
-            <>
-              <View style={styles.overallRow}>
-                <Text style={styles.overallLabel}>NET TOTAL</Text>
-                <Text style={styles.overallValue}>{netTotal}</Text>
-              </View>
-              <View style={styles.overallRow}>
-                <Text style={styles.overallLabel}>POINTS TOTAL</Text>
-                <Text style={styles.overallValue}>{rows.reduce((s, p) => s + (p.pointsTotal ?? 0), 0)}</Text>
-              </View>
-            </>
+          {courseReady && competitionUi.showNet ? (
+            <View style={styles.overallRow}>
+              <Text style={styles.overallLabel}>NET TOTAL (ALL PLAYERS)</Text>
+              <Text style={styles.overallValue}>{netTotal}</Text>
+            </View>
+          ) : null}
+          {courseReady && competitionUi.showPoints ? (
+            <View style={styles.overallRow}>
+              <Text style={styles.overallLabel}>POINTS TOTAL (ALL PLAYERS)</Text>
+              <Text style={styles.overallValue}>
+                {rows.reduce((s, p) => s + (p.pointsTotal ?? 0), 0)}
+              </Text>
+            </View>
           ) : null}
         </View>
       ) : null}
     </View>
   );
-}
-
-function buildScorecardHtml(params: {
-  courseName: string;
-  courseReady: boolean;
-  meta?: {
-    competitionName?: string;
-    competitionDate?: string;
-    tee?: string;
-    marker?: string;
-  };
-  players: {
-    name: string;
-    handicap: number;
-    scores: (string | number)[];
-    netsPerHole: (number | null)[];
-    out: number;
-    in_: number;
-    total: number;
-    netOut: number;
-    netIn: number;
-    netTotal: number;
-    pointsOut: number;
-    pointsIn: number;
-    pointsTotal: number;
-  }[];
-  frontNineTotal: number;
-  backNineTotal: number;
-  roundTotal: number;
-  netTotal: number;
-}) {
-  const front = Array.from({ length: 9 }, (_, i) => i + 1);
-  const back = Array.from({ length: 9 }, (_, i) => i + 10);
-  const { courseReady } = params;
-
-  const renderCell = (gross: string, net?: string) => {
-    const netLine = courseReady && net != null && net !== '' ? `<br><span class="net">${escapeHtml(net)}</span>` : '';
-    return `<td>${escapeHtml(gross)}${netLine}</td>`;
-  };
-
-  const renderFrontTable = () => {
-    const netHeader = courseReady ? `<th>NET OUT</th>` : '';
-    const ptsHeader = courseReady ? `<th>PTS</th>` : '';
-
-    return `
-      <h2>Front 9</h2>
-      <table>
-        <thead>
-          <tr>
-            <th class="player">Player</th>
-            <th>PH</th>
-            ${front.map((h) => `<th>${h}</th>`).join('')}
-            <th>OUT</th>
-            ${netHeader}
-            ${ptsHeader}
-          </tr>
-        </thead>
-        <tbody>
-          ${params.players
-            .map((p) => {
-              const holeCells = front
-                .map((h) => {
-                  const i = h - 1;
-                  const g = String(p.scores[i] ?? '');
-                  const n = p.netsPerHole[i] != null ? String(p.netsPerHole[i]) : '';
-                  return renderCell(g, n);
-                })
-                .join('');
-
-              const netOutCell = courseReady ? `<td class="tot">${p.netOut}</td>` : '';
-              const ptsCell = courseReady ? `<td class="tot">${p.pointsOut}</td>` : '';
-              return `
-                <tr>
-                  <td class="player">
-                    ${escapeHtml(p.name)} <span class="hcp-inline">(${p.handicap})</span>
-                  </td>
-                  <td>${p.handicap}</td>
-                  ${holeCells}
-                  <td class="tot">${p.out}</td>
-                  ${netOutCell}
-                  ${ptsCell}
-                </tr>
-              `;
-            })
-            .join('')}
-
-          <tr class="totals-row">
-            <td class="player tot">Totals</td>
-            <td></td>
-            ${front.map(() => `<td></td>`).join('')}
-            <td class="tot">${params.frontNineTotal}</td>
-            ${courseReady ? `<td class="tot">${params.players.reduce((s, p) => s + (p.netOut ?? 0), 0)}</td>` : ''}
-            ${courseReady ? `<td class="tot">${params.players.reduce((s, p) => s + (p.pointsOut ?? 0), 0)}</td>` : ''}
-          </tr>
-        </tbody>
-      </table>
-    `;
-  };
-
-  const renderBackTable = () => {
-    const netHeader = courseReady ? `<th>NET IN</th>` : '';
-    const ptsHeader = courseReady ? `<th>PTS</th>` : '';
-
-    return `
-      <h2>Back 9</h2>
-      <table>
-        <thead>
-          <tr>
-            <th class="player">Player</th>
-            <th>PH</th>
-            ${back.map((h) => `<th>${h}</th>`).join('')}
-            <th>IN</th>
-            ${netHeader}
-            ${ptsHeader}
-          </tr>
-        </thead>
-        <tbody>
-          ${params.players
-            .map((p) => {
-              const holeCells = back
-                .map((h) => {
-                  const i = h - 1;
-                  const g = String(p.scores[i] ?? '');
-                  const n = p.netsPerHole[i] != null ? String(p.netsPerHole[i]) : '';
-                  return renderCell(g, n);
-                })
-                .join('');
-
-              const netInCell = courseReady ? `<td class="tot">${p.netIn}</td>` : '';
-              const ptsCell = courseReady ? `<td class="tot">${p.pointsIn}</td>` : '';
-              return `
-                <tr>
-                  <td class="player">
-                    ${escapeHtml(p.name)} <span class="hcp-inline">(${p.handicap})</span>
-                  </td>
-                  <td>${p.handicap}</td>
-                  ${holeCells}
-                  <td class="tot">${p.in_}</td>
-                  ${netInCell}
-                  ${ptsCell}
-                </tr>
-              `;
-            })
-            .join('')}
-
-          <tr class="totals-row">
-            <td class="player tot">Totals</td>
-            <td></td>
-            ${back.map(() => `<td></td>`).join('')}
-            <td class="tot">${params.backNineTotal}</td>
-            ${courseReady ? `<td class="tot">${params.players.reduce((s, p) => s + (p.netIn ?? 0), 0)}</td>` : ''}
-            ${courseReady ? `<td class="tot">${params.players.reduce((s, p) => s + (p.pointsIn ?? 0), 0)}</td>` : ''}
-          </tr>
-        </tbody>
-      </table>
-    `;
-  };
-
-  const renderOverallTotals = () => {
-    const netBlock = courseReady
-      ? `<div class="totalsline"><span class="label">NET TOTAL</span><span class="value">${params.netTotal}</span></div>`
-      : '';
-    const ptsBlock = courseReady
-      ? `<div class="totalsline"><span class="label">POINTS TOTAL</span><span class="value">${params.players.reduce((s, p) => s + (p.pointsTotal ?? 0), 0)}</span></div>`
-      : '';
-
-    return `
-      <div class="overall">
-        <div class="totalsline"><span class="label">GROSS TOTAL</span><span class="value">${params.roundTotal}</span></div>
-        ${netBlock}
-        ${ptsBlock}
-      </div>
-    `;
-  };
-
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Scorecard</title>
-<style>
-  /* Force background colours to render in PDF/print (WebKit/Expo Print) */
-  * {
-    -webkit-print-color-adjust: exact !important;
-    print-color-adjust: exact !important;
-  }
-
-  html, body {
-    background: #ffffff;
-  }
-  @page {
-    size: A4 landscape;
-    margin: 12mm;
-  }
-
-  :root {
-    --primary: ${colors.primary};
-    --primarySoft: ${colors.primarySoft};
-    --card: ${colors.card};
-    --muted: ${colors.textSecondary};
-  }
-
-  body { font-family: Arial, sans-serif; padding: 16px; color: #000; position: relative; }
-
-  body::before {
-    content: "NetParGolf";
-    position: absolute;
-    top: 40%;
-    left: 50%;
-    transform: translate(-50%, -50%) rotate(-20deg);
-    font-size: 80px;
-    font-weight: 900;
-    color: rgba(0, 0, 0, 0.05);
-    white-space: nowrap;
-    pointer-events: none;
-    z-index: 0;
-  }
-  .content {
-    position: relative;
-    z-index: 1;
-  }
-  /* Top-right watermark anchored to printable area */
-  body::after {
-    content: "${params.courseName.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}";
-    position: absolute;
-    top: 4mm;
-    right: 12mm;
-    font-size: 20px;
-    font-weight: 900;
-    color: rgba(0, 0, 0, 0.05);
-    text-transform: uppercase;
-    letter-spacing: 2px;
-    white-space: nowrap;
-    pointer-events: none;
-  }
-  h1 { margin: 0 0 6px 0; font-size: 22px; font-weight: 900; color: var(--primary); }
-  .sub { margin: 0 0 10px 0; font-size: 12px; }
-  h2 { margin: 16px 0 6px 0; font-size: 14px; font-weight: 900; color: var(--primary); border-bottom: 2px solid var(--primarySoft); padding-bottom: 4px; }
-
-  table { border-collapse: collapse; width: 100%; table-layout: fixed; margin-bottom: 14px; border: 2px solid var(--primary); }
-  th, td { border: 1px solid #222; padding: 5px 3px; text-align: center; font-size: 11px; }
-  th { background: var(--primarySoft) !important; color: var(--primary) !important; font-weight: 900; }
-  .player {
-    text-align: left;
-    font-weight: 700;
-    width: 130px;
-    background: var(--card) !important;
-    white-space: nowrap;
-  }
-  .hcp-inline { font-size: 10px; color: var(--muted); font-weight: 800; }
-  .comp {
-    margin: 10px 0 14px 0;
-    padding: 0;
-    border: 1.5px solid var(--primary);
-    border-radius: 10px;
-    overflow: hidden;
-  }
-  .comp-row {
-    display: flex;
-    border-bottom: 1px solid #ddd;
-  }
-  .comp-row:last-child {
-    border-bottom: none;
-  }
-  .comp-label {
-    width: 120px;
-    padding: 8px 10px;
-    font-weight: 900;
-    color: var(--primary);
-    background: var(--primarySoft);
-    border-right: 2px solid var(--primary);
-  }
-  .comp-value {
-    flex: 1;
-    padding: 8px 12px;
-  }
-  .tot { font-weight: 800; }
-  td.tot { background: #f8f8f8 !important; }
-  .net { font-size: 9px; color: #555; }
-
-  /* Zebra striping (tbody only) */
-  tbody tr:nth-child(even):not(.totals-row) td {
-    background: #fafafa !important;
-  }
-  tbody tr:nth-child(odd):not(.totals-row) td {
-    background: #ffffff !important;
-  }
-  /* Keep totals row dominant */
-  tr.totals-row td {
-    background: var(--primarySoft) !important;
-  }
-  .totals-row { border-top: 2px solid var(--primary); }
-  .overall {
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 2px solid var(--primary);
-  }
-  .totalsline {
-    display: flex;
-    justify-content: space-between;
-    font-weight: 900;
-    font-size: 14px;
-  }
-  .label { margin-right: 12px; }
-  .value { min-width: 60px; text-align: right; }
-
-  .footer {
-    margin-top: 18px;
-    padding-top: 8px;
-    border-top: 2px solid var(--primary);
-    font-size: 10px;
-    color: #555;
-    display: flex;
-    justify-content: space-between;
-  }
-
-  @media print {
-    body { padding: 0; }
-  }
-</style>
-</head>
-<body>
-  <div class="content">
-    <h1>Scorecard</h1>
-    <p class="sub">${escapeHtml(params.courseName)}</p>
-
-    <div class="comp">
-      <div class="comp-row">
-        <div class="comp-label">Competition</div>
-        <div class="comp-value">${escapeHtml(params.meta?.competitionName ?? '—')}</div>
-      </div>
-      <div class="comp-row">
-        <div class="comp-label">Date</div>
-        <div class="comp-value">${escapeHtml(params.meta?.competitionDate ?? '—')}</div>
-      </div>
-      <div class="comp-row">
-        <div class="comp-label">Tee</div>
-        <div class="comp-value">${escapeHtml(params.meta?.tee ?? '—')}</div>
-      </div>
-      <div class="comp-row">
-        <div class="comp-label">Marker</div>
-        <div class="comp-value">${escapeHtml(params.meta?.marker ?? '—')}</div>
-      </div>
-    </div>
-
-    ${renderFrontTable()}
-    ${renderBackTable()}
-    ${renderOverallTotals()}
-
-    <div class="footer">
-      <div>NetParGolf</div>
-      <div>Generated ${new Date().toLocaleString()}</div>
-    </div>
-  </div>
-</body>
-</html>`;
-}
-
-function escapeHtml(s: string) {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 }
 
 const styles = StyleSheet.create({
@@ -929,6 +582,34 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 12 },
   title: { fontSize: 22, fontWeight: '900', color: colors.primary },
   subTitle: { fontSize: 12, color: colors.textSecondary, marginTop: 2, fontWeight: '800' },
+  compMetaLine: { fontSize: 11, color: colors.textSecondary, marginTop: 4, fontWeight: '800' },
+  formatSub: { fontSize: 11, color: colors.textSecondary, marginTop: 6, fontWeight: '700', fontStyle: 'italic' },
+  rosterBlock: {
+    marginBottom: 12,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: colors.primarySoft,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  rosterLine: { fontSize: 12, fontWeight: '800', color: colors.textPrimary, marginBottom: 4 },
+  summaryBlock: {
+    marginBottom: 12,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.card,
+  },
+  summaryHeading: { fontSize: 12, fontWeight: '900', color: colors.primary, marginBottom: 6 },
+  summaryTitle: { fontSize: 15, fontWeight: '900', color: colors.primary, marginBottom: 4 },
+  summarySubtitle: { fontSize: 12, color: colors.textSecondary, marginBottom: 8 },
+  summaryLine: { fontSize: 12, color: colors.textPrimary, marginBottom: 4, lineHeight: 18 },
+  extraRow: { backgroundColor: colors.primarySoft },
+  extraRowAlt: { backgroundColor: colors.background },
+  extraRowLabel: { fontSize: 11, fontWeight: '900', color: colors.primary },
+  extraRowCellText: { fontSize: 10, fontWeight: '700', color: colors.textPrimary, textAlign: 'center' },
+
   meta: { fontSize: 11, color: colors.textSecondary, marginTop: 6 },
   courseNote: { fontSize: 11, color: colors.warning, marginTop: 4, fontStyle: 'italic' },
 

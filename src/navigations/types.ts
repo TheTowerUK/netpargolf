@@ -1,5 +1,7 @@
 // src/navigations/types.ts
 
+import type { RoundCompetition } from '../types/competition';
+
 export type RootStackParamList = {
   Home: undefined;
   HelpPractice: undefined;
@@ -12,7 +14,12 @@ export type RootStackParamList = {
   RoundDetail: { roundId: string };
   Stats: undefined;
 
-  RoundSetup: undefined;
+  CompetitionSelect: undefined;
+  RoundSetup: { competition: RoundCompetition };
   RoundScoring: undefined;
+  LiveIndividualStableford: undefined;
+  LiveBetterballStableford: undefined;
+  LiveSinglesMatchplay: undefined;
+  LiveFourballBetterballMatchplay: undefined;
   About: undefined;
 };

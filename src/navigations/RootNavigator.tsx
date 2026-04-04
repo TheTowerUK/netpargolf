@@ -7,8 +7,13 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
 import type { RootStackParamList } from './types';
 import HomeScreen from '../screens/HomeScreen';
+import CompetitionSelectScreen from '../screens/competition/CompetitionSelectScreen';
 import RoundSetupScreen from '../screens/RoundSetupScreen';
 import RoundScoringScreen from '../screens/RoundScoringScreen';
+import LiveIndividualStablefordScreen from '../screens/live/LiveIndividualStablefordScreen';
+import LiveSinglesMatchplayScreen from '../screens/live/LiveSinglesMatchplayScreen';
+import LiveBetterballStablefordScreen from '../screens/live/LiveBetterballStablefordScreen';
+import LiveFourballBetterballMatchplayScreen from '../screens/live/LiveFourballBetterballMatchplayScreen';
 import HelpPracticeScreen from '../screens/HelpPracticeScreen';
 import CourseSetupScreen from '../screens/CourseSetupScreen';
 import CourseSearchScreen from '../screens/CourseSearchScreen';
@@ -27,6 +32,11 @@ export default function RootNavigator() {
       <Stack.Navigator>
         <Stack.Screen name="Home" component={HomeScreen} options={{ title: 'NetParGolf' }} />
         <Stack.Screen
+          name="CompetitionSelect"
+          component={CompetitionSelectScreen}
+          options={{ title: 'Choose Competition' }}
+        />
+        <Stack.Screen
           name="RoundSetup"
           component={RoundSetupScreen}
           options={{ title: 'Round Setup' }}
@@ -35,6 +45,26 @@ export default function RootNavigator() {
           name="RoundScoring"
           component={RoundScoringScreen}
           options={{ title: 'Live Round' }}
+        />
+        <Stack.Screen
+          name="LiveIndividualStableford"
+          component={LiveIndividualStablefordScreen}
+          options={{ title: 'Individual Stableford' }}
+        />
+        <Stack.Screen
+          name="LiveBetterballStableford"
+          component={LiveBetterballStablefordScreen}
+          options={{ title: 'Betterball Stableford' }}
+        />
+        <Stack.Screen
+          name="LiveSinglesMatchplay"
+          component={LiveSinglesMatchplayScreen}
+          options={{ title: 'Singles Matchplay' }}
+        />
+        <Stack.Screen
+          name="LiveFourballBetterballMatchplay"
+          component={LiveFourballBetterballMatchplayScreen}
+          options={{ title: 'Fourball Matchplay' }}
         />
         <Stack.Screen name="LiveScoring" component={LiveScoringScreen} options={{ title: 'Live Scoring' }} />
         <Stack.Screen name="Scoreboard" component={ScoreboardScreen} options={{ title: 'Scoreboard' }} />

@@ -1,11 +1,6 @@
 // src/storage/roundStorage.ts
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
-export type RoundCompetition =
-  | 'individual_stableford'
-  | 'fourball_strokeplay'
-  | 'fourball_matchplay'
-  | 'matchplay';
+import type { RoundCompetition } from '../types/competition';
 
 export type RoundingMode = 'floor' | 'round' | 'ceil';
 
@@ -77,18 +72,23 @@ function normalisePlayer(player: any): PersistedPlayer | null {
   };
 }
 
-function migrateCompetition(raw: any): RoundCompetition {
-  const c = raw?.competition;
-  if (c === 'betterball') return 'fourball_strokeplay';
-  if (
-    c === 'individual_stableford' ||
-    c === 'fourball_strokeplay' ||
-    c === 'fourball_matchplay' ||
-    c === 'matchplay'
-  ) {
-    return c;
+function normalizeCompetition(value: string | undefined): RoundCompetition {
+  switch (value) {
+    case 'individual_stableford':
+      return 'individual_stableford';
+    case 'betterball':
+    case 'betterball_stableford':
+    case 'fourball_strokeplay':
+      return 'betterball_stableford';
+    case 'matchplay':
+    case 'singles_matchplay':
+      return 'singles_matchplay';
+    case 'fourball_betterball_matchplay':
+    case 'fourball_matchplay':
+      return 'fourball_betterball_matchplay';
+    default:
+      return 'individual_stableford';
   }
-  return 'individual_stableford';
 }
 
 function normaliseRound(raw: any): PersistedRound | null {
@@ -126,7 +126,9 @@ function normaliseRound(raw: any): PersistedRound | null {
     };
   });
 
-  const competition: RoundCompetition = migrateCompetition(raw);
+  const competition: RoundCompetition = normalizeCompetition(
+    typeof raw.competition === 'string' ? raw.competition : undefined
+  );
 
   const roundingMode: RoundingMode =
     raw.roundingMode === 'floor' || raw.roundingMode === 'ceil'

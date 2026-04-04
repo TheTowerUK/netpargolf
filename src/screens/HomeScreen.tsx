@@ -25,7 +25,7 @@ export default function HomeScreen({ navigation }: Props) {
 
   const onLiveScoring = () => {
     hapticTap();
-    navigation.navigate('RoundSetup');
+    navigation.navigate('CompetitionSelect');
   };
 
   return (

@@ -1,4 +1,5 @@
-import type { PersistedPlayer, RoundCompetition, RoundingMode } from '../storage/roundStorage';
+import type { PersistedPlayer, RoundingMode } from '../storage/roundStorage';
+import type { RoundCompetition } from '../types/competition';
 
 export type { RoundingMode };
 
@@ -119,7 +120,7 @@ export function calculateCompetitionHandicaps(params: {
     };
   });
 
-  if (competition === 'fourball_matchplay') {
+  if (competition === 'fourball_betterball_matchplay') {
     const raws = withCourse
       .map((p) => p.rawCourseHandicap)
       .filter((r): r is number => r != null && Number.isFinite(r));
@@ -165,7 +166,7 @@ export function calculateCompetitionHandicaps(params: {
     });
   }
 
-  // individual_stableford, fourball_strokeplay, matchplay (singles): playing handicap from raw CH
+  // individual_stableford, betterball_stableford, singles_matchplay: playing handicap from raw CH
   return withCourse.map((p) => {
     if (p.rawCourseHandicap == null) {
       return {

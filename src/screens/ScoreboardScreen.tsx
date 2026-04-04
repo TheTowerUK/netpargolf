@@ -20,17 +20,20 @@ import { getRoundEntryById, saveRoundToHistory, type StoredRound } from '../stor
 import { mapPersistedRoundToScoreboard } from '../core/roundMapper';
 import type { Course } from '../core/course';
 import { computeScoreboardTotals, computeMatchSummary } from '../utils/scoreboardHelpers';
+import { computeFourballBetterballMatchSummary } from '../core/scoring/fourballBetterballMatchplay';
+import {
+  getFourballMatchSummaryLines,
+  getFourballSideRosterLines,
+  getSinglesMatchSummaryLines,
+  getSinglesStandingsScoreMain,
+} from '../core/scoring/matchplayDisplay';
+import { buildBetterballStablefordLeaderText } from '../core/scoring/stablefordDisplay';
 import { hapticTap, hapticSuccess, hapticError } from '../utils/feedback';
 import { useToast } from '../components/Toast';
 import PrimaryButton from '../components/PrimaryButton';
+import type { RoundCompetition } from '../types/competition';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Scoreboard'>;
-
-type Competition =
-  | 'individual_stableford'
-  | 'fourball_strokeplay'
-  | 'fourball_matchplay'
-  | 'matchplay';
 
 type StandingItem = {
   id: string;
@@ -53,7 +56,7 @@ type RoundSummary = {
 
 type ResultBannerData = {
   title: string;
-  subtitle: string;
+  subtitle?: string;
   supportingText?: string;
 };
 
@@ -62,16 +65,30 @@ function getSafeName(name?: string, fallback = 'Player'): string {
   return t.length ? t : fallback;
 }
 
-function formatCompetitionLabel(value: Competition | string | undefined): string {
+function matchplayBannerSubtitle(
+  ms: { holesCompleted: number; holesRemaining: number; statusText: string },
+  isComplete: boolean
+): string {
+  if (ms.holesCompleted === 0) return '';
+  if (ms.statusText === 'All Square' && (ms.holesCompleted >= 18 || isComplete)) {
+    return 'Halved · 18 holes';
+  }
+  if (ms.statusText.includes('won')) {
+    return `Match decided · ${ms.holesCompleted} holes scored`;
+  }
+  return `${ms.holesCompleted} holes scored · ${ms.holesRemaining} remaining`;
+}
+
+function formatCompetitionLabel(value: RoundCompetition | string | undefined): string {
   switch (value) {
     case 'individual_stableford':
       return 'Individual Stableford';
-    case 'fourball_strokeplay':
-      return 'Four-Ball Stroke Play';
-    case 'fourball_matchplay':
-      return 'Four-Ball Match Play';
-    case 'matchplay':
-      return 'Match Play';
+    case 'betterball_stableford':
+      return 'Betterball Stableford';
+    case 'singles_matchplay':
+      return 'Singles Matchplay';
+    case 'fourball_betterball_matchplay':
+      return 'Fourball Betterball Matchplay';
     default:
       return 'Round';
   }
@@ -82,7 +99,9 @@ function ResultBanner({ data }: { data: ResultBannerData }) {
     <View style={styles.resultBanner}>
       <Text style={styles.resultEyebrow}>RESULT</Text>
       <Text style={styles.resultTitle}>{data.title}</Text>
-      <Text style={styles.resultSubtitle}>{data.subtitle}</Text>
+      {data.subtitle ? (
+        <Text style={styles.resultSubtitle}>{data.subtitle}</Text>
+      ) : null}
       {data.supportingText ? (
         <Text style={styles.resultSupporting}>{data.supportingText}</Text>
       ) : null}
@@ -97,6 +116,34 @@ function SummaryField({ label, value }: { label: string; value: string }) {
       <Text style={styles.summaryValue} numberOfLines={2}>
         {value}
       </Text>
+    </View>
+  );
+}
+
+function MatchplayStatusCard(props: {
+  formatLabel: string;
+  singles?: { lines: ReturnType<typeof getSinglesMatchSummaryLines>; vsLine: string };
+  fourball?: { lines: ReturnType<typeof getFourballMatchSummaryLines> };
+}) {
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>Match status</Text>
+      <SummaryField label="Format" value={props.formatLabel} />
+      {props.singles ? (
+        <>
+          <SummaryField label="Matchup" value={props.singles.vsLine} />
+          <Text style={styles.matchStatusPrimary}>{props.singles.lines.statusLine}</Text>
+          <Text style={styles.matchStatusSecondary}>{props.singles.lines.holesWonSubline}</Text>
+        </>
+      ) : null}
+      {props.fourball ? (
+        <>
+          <Text style={styles.matchRosterMuted}>{props.fourball.lines.sideALine}</Text>
+          <Text style={styles.matchRosterMuted}>{props.fourball.lines.sideBLine}</Text>
+          <Text style={styles.matchStatusPrimaryFourball}>{props.fourball.lines.statusLine}</Text>
+          <Text style={styles.matchStatusSecondary}>{props.fourball.lines.holesWonSubline}</Text>
+        </>
+      ) : null}
     </View>
   );
 }
@@ -255,114 +302,149 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
   const totalsByPlayerId = totalsResult?.totalsByPlayerId ?? {};
   const teamTotal = totalsResult?.teamTotal ?? 0;
   const playerMatchWins = totalsResult?.winsByPlayerId ?? {};
+  const betterballSideTotals = totalsResult?.betterballSideTotals;
 
   const matchSummary = useMemo(() => {
     if (
       !activeRound ||
-      (activeRound.competition !== 'matchplay' &&
-        activeRound.competition !== 'fourball_matchplay')
+      activeRound.competition !== 'singles_matchplay'
     )
       return null;
-    return computeMatchSummary(activeRound);
-  }, [activeRound]);
+    return computeMatchSummary(activeRound, course);
+  }, [activeRound, course]);
 
-  const isMatchplay =
-    mappedRound?.competition === 'matchplay' ||
-    mappedRound?.competition === 'fourball_matchplay';
-  const isFourballStroke = mappedRound?.competition === 'fourball_strokeplay';
+  const fourballMatchSummary = useMemo(() => {
+    if (!activeRound || activeRound.competition !== 'fourball_betterball_matchplay') {
+      return null;
+    }
+    return computeFourballBetterballMatchSummary(activeRound, course);
+  }, [activeRound, course]);
+
+  const singlesMatchStatusLines = useMemo(() => {
+    if (!activeRound || activeRound.competition !== 'singles_matchplay' || !matchSummary) {
+      return null;
+    }
+    const [p1, p2] = activeRound.players;
+    if (!p1 || !p2) return null;
+    return getSinglesMatchSummaryLines({
+      p1,
+      p2,
+      winsByPlayerId: matchSummary.winsByPlayerId,
+      holesCompleted: matchSummary.holesCompleted,
+      holesRemaining: matchSummary.holesRemaining,
+      statusText: matchSummary.statusText,
+    });
+  }, [activeRound, matchSummary]);
+
+  const fourballMatchStatusLines = useMemo(() => {
+    if (
+      !activeRound ||
+      activeRound.competition !== 'fourball_betterball_matchplay' ||
+      !fourballMatchSummary
+    ) {
+      return null;
+    }
+    if (activeRound.players.length !== 4) return null;
+    return getFourballMatchSummaryLines(activeRound.players, fourballMatchSummary);
+  }, [activeRound, fourballMatchSummary]);
+
+  const isSinglesMatchplay = mappedRound?.competition === 'singles_matchplay';
+  const isBetterballStableford = mappedRound?.competition === 'betterball_stableford';
+  const isFourballBetterballMatchplay =
+    mappedRound?.competition === 'fourball_betterball_matchplay';
   const isStableford = mappedRound?.competition === 'individual_stableford';
 
   const bannerData = useMemo<ResultBannerData | null>(() => {
-    if (!mappedRound || !summary) return null;
+    if (!mappedRound) return null;
 
-    if (isMatchplay && matchSummary) {
+    if (isSinglesMatchplay && matchSummary && activeRound) {
+      const [p1, p2] = activeRound.players;
+      if (!p1 || !p2) return null;
       if (matchSummary.holesCompleted === 0) {
         return {
-          title: 'No holes recorded yet',
-          subtitle: '',
-          supportingText: undefined,
+          title: 'No holes scored yet',
+          subtitle: `${getSafeName(p1.name)} vs ${getSafeName(p2.name)}`,
+          supportingText: 'Singles Matchplay · lowest net wins each hole',
         };
       }
-
-      if (matchSummary.lead === 0) {
-        const text =
-          matchSummary.holesCompleted === 18 || activeRound?.isComplete
-            ? 'All Square'
-            : `All Square through ${matchSummary.holesCompleted}`;
-        return {
-          title: text,
-          subtitle: matchSummary.holesCompleted === 18 || activeRound?.isComplete ? 'Halved' : '',
-          supportingText: undefined,
-        };
-      }
-
-      const leaderName = getSafeName(matchSummary.leaderName);
-      const hasWon =
-        matchSummary.lead > matchSummary.holesRemaining ||
-        (matchSummary.holesCompleted === 18 && activeRound?.isComplete);
-      const verb = hasWon ? 'wins' : 'leads';
-
-      let subtitle: string;
-      if (matchSummary.lead > matchSummary.holesRemaining) {
-        subtitle = `${matchSummary.lead} & ${matchSummary.holesRemaining}`;
-      } else if (matchSummary.holesCompleted === 18 || activeRound?.isComplete) {
-        subtitle = `${matchSummary.lead} Up`;
-      } else {
-        subtitle = `${matchSummary.lead} Up through ${matchSummary.holesCompleted}`;
-      }
-
       return {
-        title: hasWon ? `🏆 ${leaderName} wins` : `${leaderName} leads`,
-        subtitle,
+        title: matchSummary.statusText,
+        subtitle: matchplayBannerSubtitle(matchSummary, !!activeRound.isComplete),
         supportingText: undefined,
       };
     }
 
-    if (isFourballStroke) {
-      return {
-        title: 'Team total',
-        subtitle: `${teamTotal} points`,
-        supportingText: 'Best ball totals across 18 holes',
-      };
-    }
-
-    if (isStableford && summary.players.length) {
-      const ranked = [...summary.players].sort(
-        (a, b) => (totalsByPlayerId[b.id] ?? 0) - (totalsByPlayerId[a.id] ?? 0)
-      );
-      const top = ranked[0];
-      const topPts = totalsByPlayerId[top.id] ?? 0;
-      const secondPts = totalsByPlayerId[ranked[1]?.id] ?? 0;
-      const margin = topPts - secondPts;
-      const leaders = ranked.filter((p) => (totalsByPlayerId[p.id] ?? 0) === topPts);
-
-      if (leaders.length > 1) {
+    if (
+      isFourballBetterballMatchplay &&
+      fourballMatchSummary &&
+      activeRound?.players.length === 4
+    ) {
+      const roster = getFourballSideRosterLines(activeRound.players);
+      if (fourballMatchSummary.holesCompleted === 0) {
         return {
-          title: 'All Square',
-          subtitle: `${topPts} pts`,
-          supportingText: `${leaders.length} players tied`,
+          title: 'No holes scored yet',
+          subtitle: `${roster.sideALine} · ${roster.sideBLine}`,
+          supportingText: 'Fourball Betterball Matchplay · best team net per hole',
         };
       }
-
-      const marginStr = margin > 0 ? ` • ${margin} ahead` : '';
       return {
-        title: `🏆 ${getSafeName(top.name)} wins`,
-        subtitle: `${topPts} points${marginStr}`,
-        supportingText: 'Based on total Stableford points',
+        title: fourballMatchSummary.statusText,
+        subtitle: matchplayBannerSubtitle(fourballMatchSummary, !!activeRound.isComplete),
+        supportingText: `${roster.sideALine} · ${roster.sideBLine}`,
       };
     }
+
+    if (isBetterballStableford && activeRound?.players.length === 4) {
+      if (!betterballSideTotals) {
+        const r = getFourballSideRosterLines(activeRound.players);
+        return {
+          title: 'Betterball Stableford',
+          subtitle: 'Course Par and Stroke Index required for side totals',
+          supportingText: `${r.sideALine} · ${r.sideBLine}`,
+        };
+      }
+      const bb = buildBetterballStablefordLeaderText({
+        sideA: betterballSideTotals.sideA,
+        sideB: betterballSideTotals.sideB,
+        players: activeRound.players,
+        roundComplete: !!activeRound.isComplete,
+      });
+      return {
+        title: bb.title,
+        subtitle: bb.subtitle,
+        supportingText: bb.supportingText,
+      };
+    }
+
+    if (isStableford && activeRound) {
+      const currentHole = activeRound.currentHole;
+      const players = activeRound.players;
+      return {
+        title: `Hole ${currentHole} of 18`,
+        subtitle:
+          players.length > 1 ? `${players.length} players` : undefined,
+        supportingText: undefined,
+      };
+    }
+
+    if (!summary) return null;
 
     return null;
   }, [
     mappedRound,
     summary,
-    isMatchplay,
-    isFourballStroke,
+    isSinglesMatchplay,
+    isBetterballStableford,
+    isFourballBetterballMatchplay,
     isStableford,
     teamTotal,
     totalsByPlayerId,
     matchSummary,
+    fourballMatchSummary,
+    activeRound,
     activeRound?.isComplete,
+    activeRound?.currentHole,
+    betterballSideTotals,
   ]);
 
   const roundSummary = useMemo<RoundSummary | null>(() => {
@@ -394,35 +476,24 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
   }, [mappedRound, course, historyEntry, activeRound, viewingHistory]);
 
   const standings = useMemo<StandingItem[]>(() => {
-    if (!summary) return [];
-
-    if (isMatchplay && matchSummary) {
-      const [p1, p2] = summary.players;
+    if (isSinglesMatchplay && matchSummary && activeRound) {
+      const [p1, p2] = activeRound.players;
       const p1Wins = playerMatchWins[p1.id] ?? 0;
       const p2Wins = playerMatchWins[p2.id] ?? 0;
+      const margin = p1Wins - p2Wins;
       const isComplete = matchSummary.holesCompleted === 18 || activeRound?.isComplete;
       const isTied = matchSummary.lead === 0;
-
-      let resultStr = '—';
-      const { lead, holesRemaining, holesCompleted } = matchSummary;
-      if (isTied) {
-        resultStr = isComplete ? 'Halved' : 'All Square';
-      } else if (lead > holesRemaining && holesCompleted > 0) {
-        resultStr = `${lead} & ${holesRemaining}`;
-      } else if (holesCompleted === 18 || activeRound?.isComplete) {
-        resultStr = `${lead} Up`;
-      } else if (holesCompleted > 0) {
-        resultStr = `${lead} Up`;
-      }
+      const holesWonSub = `Holes won · ${p1Wins}–${p2Wins}`;
 
       if (isTied) {
+        const main = isComplete ? 'Halved' : matchSummary.statusText;
         return [
           {
             id: p1.id,
             rank: 1,
             name: getSafeName(p1.name),
-            subtitle: undefined,
-            scoreMain: resultStr,
+            subtitle: holesWonSub,
+            scoreMain: main,
             scoreSub: undefined,
             isWinner: false,
           },
@@ -430,32 +501,64 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
             id: p2.id,
             rank: 2,
             name: getSafeName(p2.name),
-            subtitle: undefined,
-            scoreMain: resultStr,
+            subtitle: holesWonSub,
+            scoreMain: main,
             scoreSub: undefined,
             isWinner: false,
           },
         ];
       }
 
+      if (!isComplete) {
+        const p1Row: StandingItem = {
+          id: p1.id,
+          rank: margin > 0 ? 1 : 2,
+          name: getSafeName(p1.name),
+          subtitle: holesWonSub,
+          scoreMain: getSinglesStandingsScoreMain({
+            playerSlot: 1,
+            matchSummary,
+            p1,
+            p2,
+          }),
+          scoreSub: undefined,
+          isWinner: false,
+        };
+        const p2Row: StandingItem = {
+          id: p2.id,
+          rank: margin > 0 ? 2 : 1,
+          name: getSafeName(p2.name),
+          subtitle: holesWonSub,
+          scoreMain: getSinglesStandingsScoreMain({
+            playerSlot: 2,
+            matchSummary,
+            p1,
+            p2,
+          }),
+          scoreSub: undefined,
+          isWinner: false,
+        };
+        return [p1Row, p2Row].sort((a, b) => a.rank - b.rank);
+      }
+
       const leader =
-        summary.players.find((p) => p.id === matchSummary.leaderPlayerId) ?? p1;
+        activeRound.players.find((p) => p.id === matchSummary.leaderPlayerId) ?? p1;
       const follower = leader.id === p1.id ? p2 : p1;
       return [
         {
           id: leader.id,
           rank: 1,
           name: getSafeName(leader.name),
-          subtitle: 'Match winner',
-          scoreMain: resultStr,
-          scoreSub: 'won',
+          subtitle: holesWonSub,
+          scoreMain: matchSummary.statusText,
+          scoreSub: undefined,
           isWinner: true,
         },
         {
           id: follower.id,
           rank: 2,
           name: getSafeName(follower.name),
-          subtitle: 'Runner-up',
+          subtitle: undefined,
           scoreMain: '—',
           scoreSub: undefined,
           isWinner: false,
@@ -463,19 +566,172 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
       ];
     }
 
-    if (isFourballStroke) {
+    if (isFourballBetterballMatchplay && fourballMatchSummary && activeRound) {
+      const roster =
+        activeRound.players.length === 4
+          ? getFourballSideRosterLines(activeRound.players)
+          : null;
+      const isComplete =
+        fourballMatchSummary.holesCompleted === 18 || activeRound?.isComplete;
+      const isTied = fourballMatchSummary.margin === 0;
+      const status = fourballMatchSummary.statusText;
+
+      const sideASub = `${fourballMatchSummary.sideAWins} holes won`;
+      const sideBSub = `${fourballMatchSummary.sideBWins} holes won`;
+
+      if (isTied) {
+        const main = isComplete ? 'Halved' : status;
+        return [
+          {
+            id: 'side-a',
+            rank: 1,
+            name: roster?.sideALine ?? 'Side A',
+            subtitle: sideASub,
+            scoreMain: main,
+            scoreSub: undefined,
+            isWinner: false,
+          },
+          {
+            id: 'side-b',
+            rank: 2,
+            name: roster?.sideBLine ?? 'Side B',
+            subtitle: sideBSub,
+            scoreMain: main,
+            scoreSub: undefined,
+            isWinner: false,
+          },
+        ];
+      }
+
+      if (!isComplete) {
+        const margin = fourballMatchSummary.margin;
+        const aheadMain = status;
+        const behindMain = `${Math.abs(margin)} Down`;
+        return [
+          {
+            id: 'side-a',
+            rank: margin > 0 ? 1 : 2,
+            name: roster?.sideALine ?? 'Side A',
+            subtitle: sideASub,
+            scoreMain: margin > 0 ? aheadMain : behindMain,
+            scoreSub: undefined,
+            isWinner: false,
+          },
+          {
+            id: 'side-b',
+            rank: margin > 0 ? 2 : 1,
+            name: roster?.sideBLine ?? 'Side B',
+            subtitle: sideBSub,
+            scoreMain: margin < 0 ? aheadMain : behindMain,
+            scoreSub: undefined,
+            isWinner: false,
+          },
+        ].sort((a, b) => a.rank - b.rank);
+      }
+
       return [
         {
-          id: 'team',
-          rank: 1,
-          name: 'Team score',
-          subtitle: 'Best ball (4 players)',
-          scoreMain: String(teamTotal),
-          scoreSub: 'pts',
-          isWinner: false,
+          id: 'side-a',
+          rank: fourballMatchSummary.margin > 0 ? 1 : 2,
+          name: roster?.sideALine ?? 'Side A',
+          subtitle: sideASub,
+          scoreMain: fourballMatchSummary.margin > 0 ? status : '—',
+          scoreSub: undefined,
+          isWinner: fourballMatchSummary.margin > 0,
         },
-      ];
+        {
+          id: 'side-b',
+          rank: fourballMatchSummary.margin < 0 ? 1 : 2,
+          name: roster?.sideBLine ?? 'Side B',
+          subtitle: sideBSub,
+          scoreMain: fourballMatchSummary.margin < 0 ? status : '—',
+          scoreSub: undefined,
+          isWinner: fourballMatchSummary.margin < 0,
+        },
+      ].sort((a, b) => a.rank - b.rank);
     }
+
+    if (isBetterballStableford && activeRound?.players.length === 4) {
+      const roster = getFourballSideRosterLines(activeRound.players);
+      if (!betterballSideTotals) {
+        return [
+          {
+            id: 'side-a',
+            rank: 1,
+            name: roster.sideALine,
+            subtitle: 'Stableford side total',
+            scoreMain: '—',
+            scoreSub: undefined,
+            isWinner: false,
+          },
+          {
+            id: 'side-b',
+            rank: 2,
+            name: roster.sideBLine,
+            subtitle: 'Stableford side total',
+            scoreMain: '—',
+            scoreSub: undefined,
+            isWinner: false,
+          },
+        ];
+      }
+      const { sideA, sideB } = betterballSideTotals;
+      const diff = sideA - sideB;
+      const complete = !!activeRound.isComplete;
+      return [
+        {
+          id: 'side-a',
+          rank: diff >= 0 ? 1 : 2,
+          name: roster.sideALine,
+          subtitle: 'Side total · Stableford points',
+          scoreMain: String(sideA),
+          scoreSub: 'pts',
+          isWinner: complete && diff > 0,
+        },
+        {
+          id: 'side-b',
+          rank: diff <= 0 ? 1 : 2,
+          name: roster.sideBLine,
+          subtitle: 'Side total · Stableford points',
+          scoreMain: String(sideB),
+          scoreSub: 'pts',
+          isWinner: complete && diff < 0,
+        },
+      ].sort((a, b) => a.rank - b.rank);
+    }
+
+    if (isStableford && activeRound) {
+      const rankedPlayers = [...activeRound.players]
+        .map((p) => ({
+          id: p.id,
+          name: p.name,
+          pts: totalsByPlayerId[p.id] ?? 0,
+        }))
+        .sort(
+          (a, b) =>
+            b.pts - a.pts ||
+            getSafeName(a.name).localeCompare(getSafeName(b.name), undefined, {
+              sensitivity: 'base',
+            })
+        );
+      const topPts = rankedPlayers[0]?.pts ?? 0;
+      const leaderIds = new Set(
+        rankedPlayers.filter((p) => p.pts === topPts && topPts > 0).map((p) => p.id)
+      );
+      const complete = !!activeRound.isComplete;
+      const soleLeader = leaderIds.size === 1;
+      return rankedPlayers.map((p, i) => ({
+        id: p.id,
+        rank: i + 1,
+        name: getSafeName(p.name),
+        subtitle: `Total · ${p.pts} Stableford pts`,
+        scoreMain: String(p.pts),
+        scoreSub: 'pts',
+        isWinner: complete && soleLeader && leaderIds.has(p.id),
+      }));
+    }
+
+    if (!summary) return [];
 
     const ranked = [...summary.players].sort(
       (a, b) => (totalsByPlayerId[b.id] ?? 0) - (totalsByPlayerId[a.id] ?? 0)
@@ -500,13 +756,17 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
     });
   }, [
     summary,
-    isMatchplay,
-    isFourballStroke,
+    isSinglesMatchplay,
+    isBetterballStableford,
+    isFourballBetterballMatchplay,
     totalsByPlayerId,
     teamTotal,
     playerMatchWins,
     matchSummary,
+    fourballMatchSummary,
+    activeRound,
     activeRound?.isComplete,
+    betterballSideTotals,
   ]);
 
   const onArchive = async () => {
@@ -539,7 +799,7 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
   };
 
   const onStartNewRound = () => {
-    navigation.navigate('RoundSetup');
+    navigation.navigate('CompetitionSelect');
   };
 
   const onGoHome = () => {
@@ -596,6 +856,24 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
         )}
 
         {roundSummary && <RoundSummaryCard summary={roundSummary} />}
+
+        {isSinglesMatchplay && singlesMatchStatusLines && activeRound?.players[0] && activeRound.players[1] ? (
+          <MatchplayStatusCard
+            formatLabel={formatCompetitionLabel('singles_matchplay')}
+            singles={{
+              lines: singlesMatchStatusLines,
+              vsLine: `${getSafeName(activeRound.players[0].name)} vs ${getSafeName(
+                activeRound.players[1].name
+              )}`,
+            }}
+          />
+        ) : null}
+        {isFourballBetterballMatchplay && fourballMatchStatusLines ? (
+          <MatchplayStatusCard
+            formatLabel={formatCompetitionLabel('fourball_betterball_matchplay')}
+            fourball={{ lines: fourballMatchStatusLines }}
+          />
+        ) : null}
 
         {standings.length > 0 ? (
           <StandingsCard items={standings} />
@@ -741,6 +1019,34 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: theme.textPrimary,
     lineHeight: 18,
+  },
+  matchStatusPrimary: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: theme.textPrimary,
+    lineHeight: 26,
+    marginTop: 12,
+  },
+  matchStatusPrimaryFourball: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: theme.textPrimary,
+    lineHeight: 26,
+    marginTop: 10,
+  },
+  matchStatusSecondary: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: theme.textSecondary,
+    lineHeight: 18,
+    marginTop: 6,
+  },
+  matchRosterMuted: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: theme.textSecondary,
+    lineHeight: 18,
+    marginTop: 4,
   },
   standingRow: {
     minHeight: 64,

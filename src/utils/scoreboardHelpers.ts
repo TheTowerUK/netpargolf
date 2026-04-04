@@ -4,32 +4,16 @@
 
 import type { PersistedRound, PersistedPlayer } from '../storage/roundStorage';
 import type { Course } from '../core/course';
-import { computePlayingHandicap, scoreHoleOptionA, sumBestN } from '../core/scoring';
+import { scoreHoleOptionA, sumBestN } from '../core/scoring';
 import type { RoundingModeInput } from '../core/scoring';
+import { strokesBasisForAllocation } from '../core/scoring/strokesBasis';
+import type { MatchSummary } from '../types/matchSummary';
+import { computeSinglesMatchplayMatchSummary } from '../core/scoring/singlesMatchplay';
+import { formatClosedMatchplayResult } from '../core/scoring/matchplayDisplay';
+import type { BetterballSideTotals } from '../core/scoring/betterballStableford';
 
-/** Playing HCP (stroke formats) or match strokes (four-ball match); legacy fallback from CH × allowance. */
-export function strokesBasisForAllocation(
-  player: PersistedPlayer,
-  round: PersistedRound
-): number | null {
-  if (player.playingHandicap != null && Number.isFinite(player.playingHandicap)) {
-    return player.playingHandicap;
-  }
-  if (player.matchStrokes != null && Number.isFinite(player.matchStrokes)) {
-    return player.matchStrokes;
-  }
-  if (player.courseHandicap != null && Number.isFinite(player.courseHandicap)) {
-    const rmRaw = round.roundingMode ?? 'round';
-    const rm: RoundingModeInput =
-      rmRaw === 'floor' || rmRaw === 'ceil' ? rmRaw : 'nearest';
-    return computePlayingHandicap(
-      player.courseHandicap,
-      round.allowancePercent ?? 100,
-      rm
-    );
-  }
-  return null;
-}
+export { strokesBasisForAllocation };
+export type { MatchSummary } from '../types/matchSummary';
 
 export type MatchHoleOutcome = 'win' | 'loss' | 'halved' | null;
 
@@ -63,23 +47,17 @@ export function getMatchHoleOutcome(
   return 'halved';
 }
 
-export type MatchSummary = {
-  leaderPlayerId: string | null;
-  leaderName: string | null;
-  lead: number;
-  holesCompleted: number;
-  holesRemaining: number;
-  statusText: string;
-  isDormieLike: boolean;
-  /** Wins per player: { [playerId]: wins } */
-  winsByPlayerId: Record<string, number>;
-};
-
 /**
- * Matchplay summary from round scores.
- * Reused from RoundScoringScreen logic.
+ * Matchplay summary. Singles matchplay uses net vs net when `course` (or stored hole SI) is available.
  */
-export function computeMatchSummary(round: PersistedRound): MatchSummary {
+export function computeMatchSummary(
+  round: PersistedRound,
+  course: Course | null = null
+): MatchSummary {
+  if (round.competition === 'singles_matchplay') {
+    return computeSinglesMatchplayMatchSummary(round, course);
+  }
+
   const [playerA, playerB] = round.players;
 
   if (!playerA || !playerB) {
@@ -89,7 +67,7 @@ export function computeMatchSummary(round: PersistedRound): MatchSummary {
       lead: 0,
       holesCompleted: 0,
       holesRemaining: 18,
-      statusText: 'Add 2 players for matchplay',
+      statusText: 'Add 2 players for singles matchplay',
       isDormieLike: false,
       winsByPlayerId: {},
     };
@@ -128,18 +106,20 @@ export function computeMatchSummary(round: PersistedRound): MatchSummary {
   }
 
   const leader = diff > 0 ? playerA : playerB;
-  const isClosedOut = lead > holesRemaining;
   const isDormieLike = lead === holesRemaining && holesRemaining > 0;
+  const leaderLabel = (leader.name ?? '').trim() || 'Player';
+  const statusText =
+    lead > holesRemaining
+      ? formatClosedMatchplayResult(leaderLabel, lead, holesRemaining)
+      : `${leaderLabel} ${lead} Up`;
 
   return {
     leaderPlayerId: leader.id,
-    leaderName: leader.name || 'Leader',
+    leaderName: leader.name?.trim() ? leader.name : null,
     lead,
     holesCompleted,
     holesRemaining,
-    statusText: isClosedOut
-      ? `${leader.name || 'Leader'} ${lead} & ${holesRemaining}`
-      : `${leader.name || 'Leader'} ${lead} Up`,
+    statusText,
     isDormieLike,
     winsByPlayerId: { [playerA.id]: aWins, [playerB.id]: bWins },
   };
@@ -156,6 +136,8 @@ export type ScoreboardTotals = {
   totalsByPlayerId: Record<string, number>;
   /** Matchplay: wins per player */
   winsByPlayerId: Record<string, number>;
+  /** Betterball Stableford: best-ball sum per side */
+  betterballSideTotals?: BetterballSideTotals;
 };
 
 /**
@@ -182,9 +164,14 @@ export function computeScoreboardTotals(params: {
 
   const rmRaw = round.roundingMode ?? 'round';
   const rm: RoundingModeInput = rmRaw === 'floor' || rmRaw === 'ceil' ? rmRaw : 'nearest';
-  const pct = round.allowancePercent ?? 100;
+  const isBetterballStableford =
+    round.competition === 'betterball_stableford' && round.players.length === 4;
+  const isIndividualStableford = round.competition === 'individual_stableford';
 
-  let teamPts = 0;
+  let teamPtsAccumulator = 0;
+  const betterballSideTotals: BetterballSideTotals | undefined = isBetterballStableford
+    ? { sideA: 0, sideB: 0 }
+    : undefined;
 
   for (let h = 1; h <= 18; h++) {
     const holeData = holeMap[h];
@@ -194,7 +181,7 @@ export function computeScoreboardTotals(params: {
 
     if (!Number.isFinite(par) || !Number.isFinite(si)) continue;
 
-    const holePoints: number[] = [];
+    const holePointsByPlayerId: Record<string, number> = {};
 
     for (const p of round.players) {
       const gross = holeData?.grossByPlayerId?.[p.id];
@@ -214,32 +201,53 @@ export function computeScoreboardTotals(params: {
           players[idx].points += b.points;
           players[idx].gross += gross;
         }
-        holePoints.push(b.points);
+        holePointsByPlayerId[p.id] = b.points;
       } catch {
         // skip invalid
       }
     }
 
-    if (holePoints.length) {
-      teamPts += sumBestN(holePoints, Math.min(4, holePoints.length));
+    if (isBetterballStableford && betterballSideTotals) {
+      const [p0, p1, p2, p3] = round.players;
+      const aVals = [holePointsByPlayerId[p0.id], holePointsByPlayerId[p1.id]].filter(
+        (v): v is number => v != null && Number.isFinite(v)
+      );
+      const bVals = [holePointsByPlayerId[p2.id], holePointsByPlayerId[p3.id]].filter(
+        (v): v is number => v != null && Number.isFinite(v)
+      );
+      if (aVals.length) betterballSideTotals.sideA += Math.max(...aVals);
+      if (bVals.length) betterballSideTotals.sideB += Math.max(...bVals);
+    } else if (!isIndividualStableford && Object.keys(holePointsByPlayerId).length) {
+      const holePoints = Object.values(holePointsByPlayerId);
+      teamPtsAccumulator += sumBestN(holePoints, Math.min(4, holePoints.length));
     }
   }
 
   const totalsByPlayerId = Object.fromEntries(players.map((p) => [p.id, p.points]));
 
+  let teamTotal: number;
+  if (isBetterballStableford && betterballSideTotals) {
+    teamTotal = betterballSideTotals.sideA + betterballSideTotals.sideB;
+  } else if (isIndividualStableford) {
+    teamTotal = players.reduce((m, p) => Math.max(m, p.points), 0);
+  } else {
+    teamTotal = teamPtsAccumulator;
+  }
+
   let winsByPlayerId: Record<string, number> = {};
   if (
-    (round.competition === 'matchplay' || round.competition === 'fourball_matchplay') &&
+    round.competition === 'singles_matchplay' &&
     round.players.length >= 2
   ) {
-    const matchSummary = computeMatchSummary(round);
+    const matchSummary = computeMatchSummary(round, course);
     winsByPlayerId = matchSummary.winsByPlayerId;
   }
 
   return {
     players,
-    teamTotal: teamPts,
+    teamTotal,
     totalsByPlayerId,
     winsByPlayerId,
+    betterballSideTotals,
   };
 }

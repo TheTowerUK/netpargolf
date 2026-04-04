@@ -18,9 +18,9 @@ import {
   loadCurrentRound,
   saveCurrentRound,
   type PersistedPlayer,
-  type RoundCompetition,
   type RoundingMode,
 } from '../storage/roundStorage';
+import { COMPETITION_OPTIONS, type RoundCompetition } from '../types/competition';
 import type { Course, CourseTee } from '../core/course';
 import { loadActiveCourse } from '../storage/courseStorage';
 import { hasMissingStrokeIndex } from '../utils/courseValidation';
@@ -36,22 +36,32 @@ import {
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RoundSetup'>;
 
+function navigateToLiveForCompetition(
+  navigation: Props['navigation'],
+  comp: RoundCompetition
+) {
+  if (comp === 'singles_matchplay') {
+    navigation.navigate('LiveSinglesMatchplay');
+  } else if (comp === 'fourball_betterball_matchplay') {
+    navigation.navigate('LiveFourballBetterballMatchplay');
+  } else if (comp === 'individual_stableford') {
+    navigation.navigate('LiveIndividualStableford');
+  } else if (comp === 'betterball_stableford') {
+    navigation.navigate('LiveBetterballStableford');
+  } else {
+    navigation.navigate('RoundScoring');
+  }
+}
+
 function makeId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-const COMPETITIONS: { key: RoundCompetition; label: string }[] = [
-  { key: 'individual_stableford', label: 'Individual Stableford' },
-  { key: 'fourball_strokeplay', label: 'Four-Ball Stroke Play' },
-  { key: 'fourball_matchplay', label: 'Four-Ball Match Play' },
-  { key: 'matchplay', label: 'Match Play' },
-];
-
 const DEFAULT_ALLOWANCE_BY_COMPETITION: Record<RoundCompetition, number> = {
   individual_stableford: 100,
-  fourball_strokeplay: 85,
-  fourball_matchplay: 90,
-  matchplay: 100,
+  betterball_stableford: 85,
+  singles_matchplay: 100,
+  fourball_betterball_matchplay: 90,
 };
 
 const ROUNDING_OPTIONS: { key: RoundingMode; label: string }[] = [
@@ -109,9 +119,24 @@ function makeBlankPlayer(): PersistedPlayer {
   };
 }
 
-export default function RoundSetupScreen({ navigation }: Props) {
-  const [competition, setCompetition] =
-    useState<RoundCompetition>('individual_stableford');
+function getAllowedPlayerCounts(competition: RoundCompetition): number[] {
+  switch (competition) {
+    case 'individual_stableford':
+      return [1, 2, 3, 4];
+    case 'betterball_stableford':
+      return [4];
+    case 'singles_matchplay':
+      return [2];
+    case 'fourball_betterball_matchplay':
+      return [4];
+    default:
+      return [1, 2, 3, 4];
+  }
+}
+
+export default function RoundSetupScreen({ navigation, route }: Props) {
+  const selectedCompetition = route.params?.competition ?? 'individual_stableford';
+  const competition = selectedCompetition;
   const [allowancePercent, setAllowancePercent] = useState('100');
   const [roundingMode, setRoundingMode] = useState<RoundingMode>('round');
   const [players, setPlayers] = useState<PersistedPlayer[]>([makeBlankPlayer()]);
@@ -143,9 +168,24 @@ export default function RoundSetupScreen({ navigation }: Props) {
     };
   }, []);
 
+  useEffect(() => {
+    setAllowancePercent(String(DEFAULT_ALLOWANCE_BY_COMPETITION[selectedCompetition]));
+  }, [selectedCompetition]);
+
   const playerCountLabel = useMemo(() => {
     return `${players.length} player${players.length === 1 ? '' : 's'}`;
   }, [players.length]);
+  const allowedPlayerCounts = useMemo(
+    () => getAllowedPlayerCounts(competition),
+    [competition]
+  );
+  const hasVariablePlayerCount = allowedPlayerCounts.length > 1;
+  const selectedCompetitionOption = useMemo(
+    () =>
+      COMPETITION_OPTIONS.find((option) => option.key === selectedCompetition) ??
+      COMPETITION_OPTIONS[0],
+    [selectedCompetition]
+  );
 
   const selectedTee: CourseTee | null = useMemo(() => {
     if (!course?.tees?.length) return null;
@@ -180,7 +220,7 @@ export default function RoundSetupScreen({ navigation }: Props) {
     return players
       .map((p, idx) => {
         const displayName = p.name?.trim() || `Player ${idx + 1}`;
-        if (competition === 'fourball_matchplay') {
+        if (competition === 'fourball_betterball_matchplay') {
           if (p.matchStrokes == null || !Number.isFinite(p.matchStrokes)) return null;
           return {
             id: p.id,
@@ -204,7 +244,7 @@ export default function RoundSetupScreen({ navigation }: Props) {
   }, [players, allowancePercent, competition, selectedTee, roundingMode]);
 
   const roundingPreview = useMemo(() => {
-    if (competition === 'fourball_matchplay') return null;
+    if (competition === 'fourball_betterball_matchplay') return null;
 
     const hi = players[0]?.handicapIndex ?? null;
     const pct = parseFloat(allowancePercent);
@@ -339,26 +379,45 @@ export default function RoundSetupScreen({ navigation }: Props) {
     });
   }
 
-  function addPlayer() {
-    setPlayers((prev) => [...prev, makeBlankPlayer()]);
+  function setPlayerCount(nextCount: number) {
+    setPlayers((prev) => {
+      if (prev.length === nextCount) return prev;
+      if (prev.length < nextCount) {
+        const extras = Array.from({ length: nextCount - prev.length }, () => makeBlankPlayer());
+        return [...prev, ...extras];
+      }
+      const removedIds = prev.slice(nextCount).map((p) => p.id);
+      if (removedIds.length > 0) {
+        setHandicapIndexDraftById((draft) => {
+          const nextDraft = { ...draft };
+          for (const id of removedIds) {
+            delete nextDraft[id];
+          }
+          return nextDraft;
+        });
+      }
+      return prev.slice(0, nextCount);
+    });
   }
 
-  function removePlayer(id: string) {
-    if (players.length <= 1) return;
-    setHandicapIndexDraftById((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-    setPlayers((prev) => prev.filter((p) => p.id !== id));
-  }
+  useEffect(() => {
+    const firstAllowed = allowedPlayerCounts[0];
+    if (!allowedPlayerCounts.includes(players.length)) {
+      setPlayerCount(firstAllowed);
+    }
+  }, [allowedPlayerCounts, players.length]);
 
   useEffect(() => {
     setPlayers((prev) => recalcPlayerHandicaps(prev));
   }, [selectedTeeName, allowancePercent, roundingMode, course, competition]);
 
-  function handleResumeRound() {
-    navigation.navigate('RoundScoring');
+  async function handleResumeRound() {
+    const existing = await loadCurrentRound();
+    if (!existing) {
+      navigation.navigate('CompetitionSelect');
+      return;
+    }
+    navigateToLiveForCompetition(navigation, existing.competition);
   }
 
   async function handleClearOldRound() {
@@ -388,6 +447,27 @@ export default function RoundSetupScreen({ navigation }: Props) {
       return;
     }
 
+    const playerCount = trimmedPlayers.length;
+    if (competition === 'individual_stableford' && (playerCount < 1 || playerCount > 4)) {
+      Alert.alert('Invalid player count', 'Individual Stableford requires 1 to 4 players.');
+      return;
+    }
+    if (competition === 'betterball_stableford' && playerCount !== 4) {
+      Alert.alert('Invalid player count', 'Betterball Stableford requires exactly 4 players.');
+      return;
+    }
+    if (competition === 'singles_matchplay' && playerCount !== 2) {
+      Alert.alert('Invalid player count', 'Singles Matchplay requires exactly 2 players.');
+      return;
+    }
+    if (competition === 'fourball_betterball_matchplay' && playerCount !== 4) {
+      Alert.alert(
+        'Invalid player count',
+        'Fourball Betterball Matchplay requires exactly 4 players.'
+      );
+      return;
+    }
+
     const parsedAllowance = Number(allowancePercent.trim());
     if (!Number.isFinite(parsedAllowance) || parsedAllowance <= 0) {
       Alert.alert('Invalid allowance', 'Enter a valid allowance percentage.');
@@ -409,7 +489,7 @@ export default function RoundSetupScreen({ navigation }: Props) {
 
     await saveCurrentRound(round);
     setHasExistingRound(true);
-    navigation.navigate('RoundScoring');
+    navigateToLiveForCompetition(navigation, competition);
   }
 
   async function handleStartRound() {
@@ -440,7 +520,7 @@ export default function RoundSetupScreen({ navigation }: Props) {
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.headerTitle}>Round Setup</Text>
         <Text style={styles.headerSubtitle}>
-          Choose the format, add players, then start scoring.
+          Confirm format settings, add players, then start scoring.
         </Text>
 
         <View style={styles.card}>
@@ -498,31 +578,48 @@ export default function RoundSetupScreen({ navigation }: Props) {
 
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Competition</Text>
-          <View style={styles.optionGroup}>
-            {COMPETITIONS.map((item) => {
-              const selected = item.key === competition;
-              return (
-                <Pressable
-                  key={item.key}
-                  style={[styles.optionChip, selected && styles.optionChipSelected]}
-                  onPress={() => {
-                    setCompetition(item.key);
-                    setAllowancePercent(
-                      String(DEFAULT_ALLOWANCE_BY_COMPETITION[item.key])
-                    );
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.optionChipText,
-                      selected && styles.optionChipTextSelected,
-                    ]}
-                  >
-                    {item.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
+          <View style={styles.selectedCompetitionBanner}>
+            <Text style={styles.selectedCompetitionTitle}>{selectedCompetitionOption.title}</Text>
+            <Text style={styles.selectedCompetitionSubtitle}>{selectedCompetitionOption.subtitle}</Text>
+            {competition === 'singles_matchplay' ? (
+              <View style={styles.matchplayFormatCallout}>
+                <Text style={styles.matchplayFormatCalloutTitle}>Singles Matchplay</Text>
+                <Text style={styles.matchplayFormatBody}>
+                  Player 1 vs Player 2 · Lowest net score wins each hole. Enter players in order — the
+                  first row is Player 1, the second is Player 2.
+                </Text>
+              </View>
+            ) : null}
+            {competition === 'fourball_betterball_matchplay' ? (
+              <View style={styles.matchplayFormatCallout}>
+                <Text style={styles.matchplayFormatCalloutTitle}>Fourball Betterball Matchplay</Text>
+                <Text style={styles.matchplayFormatBody}>
+                  Fixed sides only (not editable here).{'\n'}
+                  Side A = Player 1 + Player 2 · Side B = Player 3 + Player 4.{'\n'}
+                  Each side’s best net score on a hole counts toward the team match.
+                </Text>
+              </View>
+            ) : null}
+            {competition === 'individual_stableford' ? (
+              <View style={styles.matchplayFormatCallout}>
+                <Text style={styles.matchplayFormatCalloutTitle}>Individual Stableford</Text>
+                <Text style={styles.matchplayFormatBody}>
+                  1 to 4 players scoring individually. Each player earns Stableford points on every hole;
+                  highest total points wins — no teams or sides.
+                </Text>
+              </View>
+            ) : null}
+            {competition === 'betterball_stableford' ? (
+              <View style={styles.matchplayFormatCallout}>
+                <Text style={styles.matchplayFormatCalloutTitle}>Betterball Stableford</Text>
+                <Text style={styles.matchplayFormatBody}>
+                  Exactly 4 players · fixed pairings (not editable here).{'\n'}
+                  Side A = Player 1 + Player 2 · Side B = Player 3 + Player 4.{'\n'}
+                  The best Stableford score on each hole counts for that side; this is a points contest,
+                  not matchplay.
+                </Text>
+              </View>
+            ) : null}
           </View>
         </View>
 
@@ -601,7 +698,7 @@ export default function RoundSetupScreen({ navigation }: Props) {
           </View>
 
           <Text style={styles.roundingHelper}>
-            {competition === 'fourball_matchplay'
+            {competition === 'fourball_betterball_matchplay'
               ? 'Rounding applies to Course Handicap and to each player’s match strokes after allowance.'
               : 'Rounding applies to Course Handicap and to Playing Handicap (from raw Course Handicap × allowance).'}
           </Text>
@@ -614,11 +711,11 @@ export default function RoundSetupScreen({ navigation }: Props) {
 
           <View style={styles.roundingPreview}>
             <Text style={styles.roundingPreviewTitle}>
-              {competition === 'fourball_matchplay'
+              {competition === 'fourball_betterball_matchplay'
                 ? 'Match strokes'
                 : 'Playing handicap preview'}
             </Text>
-            {competition === 'fourball_matchplay' ? (
+            {competition === 'fourball_betterball_matchplay' ? (
               <Text style={styles.roundingPreviewHelper}>
                 Match strokes use the lowest raw Course Handicap in the field as scratch; other players get allowance × the difference (see Player Summary).
               </Text>
@@ -680,22 +777,62 @@ export default function RoundSetupScreen({ navigation }: Props) {
             <View>
               <Text style={styles.sectionTitle}>Players</Text>
               <Text style={styles.playersSub}>{playerCountLabel}</Text>
+              {competition === 'singles_matchplay' ? (
+                <Text style={styles.matchplayPlayersHint}>
+                  Head-to-head: Player 1 faces Player 2. Names appear on the scoreboard in this order.
+                </Text>
+              ) : null}
+              {competition === 'fourball_betterball_matchplay' ? (
+                <Text style={styles.matchplayPlayersHint}>
+                  Side A: Players 1 & 2 · Side B: Players 3 & 4. Roster order sets who plays on which
+                  side.
+                </Text>
+              ) : null}
+              {competition === 'individual_stableford' ? (
+                <Text style={styles.matchplayPlayersHint}>
+                  Each golfer scores for themselves only. Add up to four players; everyone competes on
+                  total Stableford points.
+                </Text>
+              ) : null}
+              {competition === 'betterball_stableford' ? (
+                <Text style={styles.matchplayPlayersHint}>
+                  Side A = Players 1 & 2 · Side B = Players 3 & 4. Best Stableford points per hole count
+                  toward each side’s total.
+                </Text>
+              ) : null}
+              {hasVariablePlayerCount ? (
+                <View style={styles.playerCountChoices}>
+                  <Text style={styles.playerCountPrompt}>How many are playing?</Text>
+                  <View style={styles.playerCountChoiceRow}>
+                    {allowedPlayerCounts.map((count) => {
+                      const selected = players.length === count;
+                      return (
+                        <Pressable
+                          key={count}
+                          onPress={() => setPlayerCount(count)}
+                          style={styles.playerCountChoiceHit}
+                        >
+                          <Text
+                            style={[
+                              styles.playerCountChoiceText,
+                              selected && styles.playerCountChoiceTextSelected,
+                            ]}
+                          >
+                            {count}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              ) : null}
             </View>
-
-            <Pressable style={styles.addBtn} onPress={addPlayer}>
-              <Text style={styles.addBtnText}>Add Player</Text>
-            </Pressable>
           </View>
 
           {players.map((player, index) => (
             <View key={player.id} style={styles.playerCard}>
               <View style={styles.playerCardHeader}>
                 <Text style={styles.playerCardTitle}>Player {index + 1}</Text>
-                {players.length > 1 && (
-                  <Pressable onPress={() => removePlayer(player.id)}>
-                    <Text style={styles.removeText}>Remove</Text>
-                  </Pressable>
-                )}
               </View>
 
               <Text style={styles.inputLabel}>Name</Text>
@@ -733,7 +870,7 @@ export default function RoundSetupScreen({ navigation }: Props) {
                   <Text style={styles.summaryLabel}>Course Hcp</Text>
                   <Text style={styles.summaryValue}>{player.courseHandicap ?? '-'}</Text>
                 </View>
-                {competition === 'fourball_matchplay' ? (
+                {competition === 'fourball_betterball_matchplay' ? (
                   <View style={styles.summaryPill}>
                     <Text style={styles.summaryLabel}>Match Str</Text>
                     <Text style={styles.summaryValue}>
@@ -747,7 +884,7 @@ export default function RoundSetupScreen({ navigation }: Props) {
                   </View>
                 )}
               </View>
-              {competition === 'fourball_matchplay' &&
+              {competition === 'fourball_betterball_matchplay' &&
               lowestRawCourseHandicapIds.has(player.id) ? (
                 <Text style={styles.scratchNote}>Plays off scratch (lowest Course Hcp in field)</Text>
               ) : null}
@@ -757,16 +894,16 @@ export default function RoundSetupScreen({ navigation }: Props) {
 
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>
-            {competition === 'fourball_matchplay'
+            {competition === 'fourball_betterball_matchplay'
               ? 'Match strokes summary'
               : 'Playing handicap summary'}
           </Text>
           <Text style={styles.phSummaryIntro}>
-            {competition === 'fourball_matchplay'
+            {competition === 'fourball_betterball_matchplay'
               ? 'Match strokes are used for shot allocation on each hole (not Playing Handicap).'
               : 'Playing Handicap is derived from raw Course Handicap × allowance, then rounded.'}
           </Text>
-          {competition === 'fourball_matchplay'
+          {competition === 'fourball_betterball_matchplay'
             ? players.filter((p) => p.matchStrokes != null).length === 0
               ? (
                   <Text style={styles.phSummaryEmpty}>
@@ -881,7 +1018,7 @@ export default function RoundSetupScreen({ navigation }: Props) {
               )}
               <Text style={styles.shotsPreviewSummary}>
                 {shotsPreviewData.selected.name} —{' '}
-                {competition === 'fourball_matchplay' ? 'Match strokes' : 'Playing Handicap'}:{' '}
+                {competition === 'fourball_betterball_matchplay' ? 'Match strokes' : 'Playing Handicap'}:{' '}
                 {shotsPreviewData.selected.final}
               </Text>
               <View style={styles.shotsPreviewGrid}>
@@ -1041,6 +1178,56 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginBottom: 10,
   },
+  selectedCompetitionBanner: {
+    backgroundColor: '#101915',
+    borderWidth: 1,
+    borderColor: '#2e3b33',
+    borderRadius: 12,
+    padding: 12,
+  },
+  selectedCompetitionTitle: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  selectedCompetitionSubtitle: {
+    color: '#9ca3af',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  selectedCompetitionPairingNote: {
+    color: '#86efac',
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 10,
+    fontWeight: '700',
+  },
+  matchplayFormatCallout: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#2e3b33',
+  },
+  matchplayFormatCalloutTitle: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  matchplayPlayersHint: {
+    color: '#9ca3af',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  matchplayFormatBody: {
+    color: '#86efac',
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
   inputLabel: {
     color: '#d1d5db',
     fontSize: 13,
@@ -1192,15 +1379,36 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: -4,
   },
-  addBtn: {
-    backgroundColor: '#14532d',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+  playerCountChoices: {
+    marginTop: 10,
   },
-  addBtnText: {
+  playerCountPrompt: {
+    color: '#9ca3af',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  playerCountChoiceRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+  },
+  playerCountChoiceHit: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    minWidth: 40,
+    alignItems: 'center',
+  },
+  playerCountChoiceText: {
+    color: '#9ca3af',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  playerCountChoiceTextSelected: {
     color: '#ffffff',
-    fontWeight: '800',
+    fontWeight: '900',
+    textDecorationLine: 'underline',
+    textDecorationColor: '#86efac',
   },
   playerCard: {
     marginTop: 12,
@@ -1218,10 +1426,6 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 16,
     fontWeight: '800',
-  },
-  removeText: {
-    color: '#d1d5db',
-    fontWeight: '700',
   },
   playerSummaryRow: {
     marginTop: 12,
