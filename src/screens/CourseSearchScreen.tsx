@@ -233,7 +233,7 @@ export default function CourseSearchScreen({ navigation }: Props) {
       {!apiKey ? (
         <View style={styles.banner}>
           <Text style={styles.bannerText}>
-            Missing API key. Add <Text style={styles.mono}>GOLFCOURSE_API_KEY</Text> (EAS secret) and rebuild.
+            Missing API key. Add <Text style={styles.mono}>GOLF_COURSE_API_KEY</Text> (EAS production env) and rebuild.
           </Text>
         </View>
       ) : null}
