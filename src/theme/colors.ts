@@ -15,6 +15,7 @@ export const colors = {
   // Text
   textPrimary: '#111111',
   textSecondary: '#555555',
+  textPlaceholder: '#9CA3AF',
   textInverse: '#FFFFFF',
 
   // Convenience

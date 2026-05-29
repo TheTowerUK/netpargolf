@@ -27,9 +27,9 @@ export function getBetterballHolePoints(
   const pointsByPlayerId: Record<string, number | null> = {};
   for (const p of players) {
     const hole = round.scores.find((s) => s.holeNumber === holeNumber);
-    const gross = hole?.grossByPlayerId?.[p.id];
-    const g = typeof gross === 'number' ? gross : null;
-    pointsByPlayerId[p.id] = getStablefordPointsForPlayer(round, p, holeNumber, course, g);
+    const gross = hole?.grossByPlayerId?.[p.id] ?? null;
+    const state = hole?.scoreStateByPlayerId?.[p.id];
+    pointsByPlayerId[p.id] = getStablefordPointsForPlayer(round, p, holeNumber, course, gross, state);
   }
 
   const sideABest = maxDefined([pointsByPlayerId[players[0].id], pointsByPlayerId[players[1].id]]);
@@ -101,11 +101,11 @@ export function getBetterballCountingPlayersForHole(
   const pair = side === 'A' ? [players[0], players[1]] : [players[2], players[3]];
   const pts: { player: PersistedPlayer; points: number | null }[] = pair.map((player) => {
     const hole = round.scores.find((s) => s.holeNumber === holeNumber);
-    const gross = hole?.grossByPlayerId?.[player.id];
-    const g = typeof gross === 'number' ? gross : null;
+    const gross = hole?.grossByPlayerId?.[player.id] ?? null;
+    const state = hole?.scoreStateByPlayerId?.[player.id];
     return {
       player,
-      points: getStablefordPointsForPlayer(round, player, holeNumber, course, g),
+      points: getStablefordPointsForPlayer(round, player, holeNumber, course, gross, state),
     };
   });
 

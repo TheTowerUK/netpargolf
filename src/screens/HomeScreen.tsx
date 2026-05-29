@@ -1,186 +1,249 @@
-// src/screens/HomeScreen.tsx
-// Add a Scoreboard button (resume view) to your existing HomeScreen.
-// If you already have your own HomeScreen, just merge the new button.
-
-import React, { useEffect, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { hapticTap } from '../utils/feedback';
-import PrimaryButton from '../components/PrimaryButton';
+import React, { useCallback, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigations/types';
-import { loadCurrentRound } from '../storage/roundStorage';
+import { filterExportableHandicapPlayers } from '../core/competitionHandicapExport';
+import { loadCurrentRound, type PersistedRound } from '../storage/roundStorage';
+import { listCourses } from '../storage/courseStorage';
+import { listRounds } from '../storage/roundHistoryStorage';
+import {
+  loadCompetitionCheckerDraft,
+  type CompetitionCheckerDraft,
+} from '../storage/competitionHandicapCheckerStorage';
+import { getCompetitionLabel } from '../utils/competitionLabels';
+import { hapticTap } from '../utils/feedback';
 import { colors } from '../theme/colors';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
 
-export default function HomeScreen({ navigation }: Props) {
-  const [hasSavedRound, setHasSavedRound] = useState(false);
+type HomeTileConfig = {
+  title: string;
+  subtitle?: string;
+  onPress: () => void;
+  primary?: boolean;
+};
 
-  useEffect(() => {
-    (async () => {
-      const r = await loadCurrentRound();
-      setHasSavedRound(!!r);
-    })();
+function draftPlayersEntered(draft: CompetitionCheckerDraft): number {
+  const players = [...draft.teamA, ...draft.teamB].map((p) => {
+    const hiText = p.handicapIndexText.replace(',', '.').trim();
+    const hi = hiText ? Number(hiText) : null;
+    return {
+      name: p.name,
+      handicapIndex: hi != null && Number.isFinite(hi) ? hi : null,
+      courseHandicap: null,
+      playingHandicap: null,
+    };
+  });
+  return filterExportableHandicapPlayers(players).length;
+}
+
+function hasCheckerDraftContent(draft: CompetitionCheckerDraft): boolean {
+  if (draft.courseName.trim() || draft.teeName.trim() || draft.updatedAt) return true;
+  return draftPlayersEntered(draft) > 0;
+}
+
+function buildCheckerDraftSubtitle(draft: CompetitionCheckerDraft | null): string | undefined {
+  if (!draft || !hasCheckerDraftContent(draft)) return undefined;
+  if (draft.updatedAt) {
+    try {
+      const time = new Date(draft.updatedAt).toLocaleTimeString(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      return `Draft saved • Last updated ${time}`;
+    } catch {
+      // fall through
+    }
+  }
+  const count = draftPlayersEntered(draft);
+  if (count > 0) return `Draft saved • ${count} players entered`;
+  return 'Draft saved';
+}
+
+function buildLiveScoringSubtitle(round: PersistedRound | null): string | undefined {
+  if (!round) return undefined;
+  return `Active round • ${getCompetitionLabel(round.competition)} • Hole ${round.currentHole} of 18`;
+}
+
+function HomeTile({ tile }: { tile: HomeTileConfig }) {
+  return (
+    <Pressable
+      onPress={() => {
+        hapticTap();
+        tile.onPress();
+      }}
+      style={({ pressed }) => [
+        styles.tile,
+        tile.primary && styles.tilePrimary,
+        pressed && styles.tilePressed,
+      ]}
+    >
+      <Text style={[styles.tileTitle, tile.primary && styles.tileTitlePrimary]}>{tile.title}</Text>
+      {tile.subtitle ? (
+        <Text style={[styles.tileSubtitle, tile.primary && styles.tileSubtitlePrimary]}>
+          {tile.subtitle}
+        </Text>
+      ) : null}
+    </Pressable>
+  );
+}
+
+export default function HomeScreen({ navigation }: Props) {
+  const [activeRound, setActiveRound] = useState<PersistedRound | null>(null);
+  const [savedCourseCount, setSavedCourseCount] = useState(0);
+  const [roundHistoryCount, setRoundHistoryCount] = useState(0);
+  const [checkerDraft, setCheckerDraft] = useState<CompetitionCheckerDraft | null>(null);
+
+  const refreshHomeMeta = useCallback(() => {
+    void Promise.all([
+      loadCurrentRound(),
+      listCourses(),
+      listRounds(),
+      loadCompetitionCheckerDraft(),
+    ]).then(([round, courses, rounds, draft]) => {
+      setActiveRound(round);
+      setSavedCourseCount(courses.length);
+      setRoundHistoryCount(rounds.length);
+      setCheckerDraft(draft);
+    });
   }, []);
 
-  const onLiveScoring = () => {
-    hapticTap();
-    navigation.navigate('CompetitionSelect');
-  };
+  useFocusEffect(
+    useCallback(() => {
+      refreshHomeMeta();
+    }, [refreshHomeMeta])
+  );
+
+  const tiles = useMemo<HomeTileConfig[]>(
+    () => [
+      {
+        title: 'Live Scoring',
+        subtitle: buildLiveScoringSubtitle(activeRound),
+        onPress: () => navigation.navigate('CompetitionSelect'),
+        primary: true,
+      },
+      {
+        title: 'Competition Handicap Checker',
+        subtitle: buildCheckerDraftSubtitle(checkerDraft),
+        onPress: () => navigation.navigate('CompetitionHandicapChecker'),
+      },
+      {
+        title: 'Course Setup',
+        subtitle:
+          savedCourseCount > 0
+            ? `${savedCourseCount} saved course${savedCourseCount === 1 ? '' : 's'}`
+            : undefined,
+        onPress: () => navigation.navigate('CourseSetup'),
+      },
+      {
+        title: 'Round History',
+        subtitle:
+          roundHistoryCount > 0
+            ? `${roundHistoryCount} round${roundHistoryCount === 1 ? '' : 's'} recorded`
+            : undefined,
+        onPress: () => navigation.navigate('RoundHistory'),
+      },
+      {
+        title: 'Help & Practice',
+        onPress: () => navigation.navigate('HelpPractice'),
+      },
+      {
+        title: 'About',
+        onPress: () => navigation.navigate('About'),
+      },
+    ],
+    [activeRound, checkerDraft, navigation, roundHistoryCount, savedCourseCount]
+  );
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <View style={styles.hero}>
         <Text style={styles.heroTitle}>NetParGolf</Text>
+        <Text style={styles.heroTagline}>Score • Setup • Compete</Text>
         <Text style={styles.heroSub}>
-          Live scoring + training points (net vs par). Par/SI locked per hole from your saved course.
-        </Text>
-
-        <View style={styles.heroChips}>
-          <View style={styles.chip}><Text style={styles.chipText}>4 players</Text></View>
-          <View style={styles.chip}><Text style={styles.chipText}>Gross + Net</Text></View>
-          <View style={styles.chip}><Text style={styles.chipText}>Print scorecard</Text></View>
-        </View>
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Getting started</Text>
-        <Text style={styles.guideStep}>1. Choose or add your course</Text>
-        <Text style={styles.guideStep}>2. Check par and Stroke Index values</Text>
-        <Text style={styles.guideStep}>3. Set up your round and players</Text>
-        <Text style={styles.guideStep}>4. Start scoring</Text>
-        <Text style={styles.guideNote}>
-          If Stroke Index values are missing, update them in Course Setup before playing for accurate handicap scoring.
+          Track your rounds, manage course data, and create competition handicap sheets — all from
+          one app.
         </Text>
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Quick Start</Text>
-
-        <PrimaryButton
-          title="Course Setup (Par & SI)"
-          onPress={() => navigation.navigate('CourseSetup')}
-          variant="secondary"
-          style={styles.courseSetupBtn}
-        />
-
-        <View style={styles.divider} />
-
-        <PrimaryButton
-          title="Live Scoring (4 players)"
-          onPress={onLiveScoring}
-          variant="primary"
-        />
-
-        <View style={{ height: 10 }} />
-
-        <PrimaryButton
-          title={hasSavedRound ? 'Scoreboard (resume)' : 'Scoreboard'}
-          onPress={() => navigation.navigate('Scoreboard')}
-          variant="secondary"
-          style={styles.secondaryBtnRow}
-        />
-
-        <View style={{ height: 10 }} />
-
-        <PrimaryButton
-          title="Scorecard (printable)"
-          onPress={() => navigation.navigate('Scorecard')}
-          variant="secondary"
-          style={styles.secondaryBtnRow}
-        />
-
-        <View style={{ height: 10 }} />
-
-        <PrimaryButton
-          title="Round History"
-          onPress={() => navigation.navigate('RoundHistory')}
-          variant="secondary"
-          style={styles.secondaryBtnRow}
-        />
-
-        <View style={{ height: 10 }} />
-
-        <PrimaryButton
-          title="Stats"
-          onPress={() => navigation.navigate('Stats')}
-          variant="secondary"
-          style={styles.secondaryBtnRow}
-        />
-
-        <View style={{ height: 10 }} />
-
-        <PrimaryButton
-          title="Help / Practice"
-          onPress={() => navigation.navigate('HelpPractice')}
-          variant="secondary"
-          style={styles.secondaryBtnRow}
-        />
-
-        <View style={{ height: 10 }} />
-
-        <PrimaryButton
-          title="About NetParGolf"
-          onPress={() => {
-            hapticTap();
-            navigation.navigate('About');
-          }}
-          variant="secondary"
-          style={styles.secondaryBtnRow}
-        />
-
-        <Text style={styles.hint}>
-          Tip: Live Scoring autosaves your round. Scoreboard shows totals and lets you continue.
-        </Text>
+      <View style={styles.tiles}>
+        {tiles.map((tile) => (
+          <HomeTile key={tile.title} tile={tile} />
+        ))}
       </View>
-
-      <Text style={styles.footerMuted}>v0.3 — Autosave round + scoreboard</Text>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 18, paddingBottom: 28, backgroundColor: colors.background },
-
+  container: {
+    padding: 18,
+    paddingBottom: 28,
+    backgroundColor: colors.background,
+  },
   hero: {
     backgroundColor: colors.primary,
     borderRadius: 18,
     padding: 16,
-    marginBottom: 14,
+    marginBottom: 16,
   },
-  heroTitle: { fontSize: 28, fontWeight: '900', letterSpacing: -0.5, marginBottom: 6, color: colors.textInverse },
-  heroSub: { fontSize: 13, color: colors.textInverse, opacity: 0.9, lineHeight: 18 },
-
-  heroChips: { flexDirection: 'row', gap: 8, marginTop: 12, flexWrap: 'wrap' },
-  chip: { backgroundColor: 'rgba(255,255,255,0.14)', borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6 },
-  chipText: { color: colors.textInverse, fontWeight: '800', fontSize: 12 },
-
-  card: {
+  heroTitle: {
+    fontSize: 28,
+    fontWeight: '900',
+    letterSpacing: -0.5,
+    color: colors.textInverse,
+  },
+  heroTagline: {
+    marginTop: 6,
+    fontSize: 15,
+    fontWeight: '800',
+    color: colors.textInverse,
+    letterSpacing: 0.2,
+  },
+  heroSub: {
+    marginTop: 10,
+    fontSize: 13,
+    color: colors.textInverse,
+    opacity: 0.92,
+    lineHeight: 19,
+  },
+  tiles: {
+    gap: 10,
+  },
+  tile: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 12,
+    borderRadius: 14,
     backgroundColor: colors.card,
-  },
-  cardTitle: { fontSize: 16, fontWeight: '900', marginBottom: 10, color: colors.textPrimary },
-  guideStep: { fontSize: 14, color: colors.textPrimary, lineHeight: 22, marginBottom: 2 },
-  guideNote: { fontSize: 12, color: colors.textSecondary, lineHeight: 17, marginTop: 10 },
-
-  btnPressed: { transform: [{ scale: 0.98 }], opacity: 0.9 },
-
-  courseSetupBtn: {
-    borderColor: colors.accent,
-  },
-
-  divider: { height: 1, backgroundColor: colors.border, marginVertical: 14 },
-
-  secondaryBtnRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     paddingHorizontal: 14,
+    paddingVertical: 14,
   },
-
-  hint: { marginTop: 10, fontSize: 12, color: colors.textSecondary, lineHeight: 17 },
-  footerMuted: { marginTop: 8, color: colors.textSecondary, fontSize: 12, textAlign: 'center' },
+  tilePrimary: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  tilePressed: {
+    opacity: 0.92,
+    transform: [{ scale: 0.99 }],
+  },
+  tileTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: colors.textPrimary,
+  },
+  tileTitlePrimary: {
+    color: colors.textInverse,
+  },
+  tileSubtitle: {
+    marginTop: 4,
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.textSecondary,
+    fontWeight: '600',
+  },
+  tileSubtitlePrimary: {
+    color: colors.textInverse,
+    opacity: 0.9,
+  },
 });

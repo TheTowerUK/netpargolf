@@ -16,6 +16,7 @@ import {
   loadCurrentRound,
   markCurrentRoundComplete,
   saveCurrentRound,
+  type HoleScoreState,
   type PersistedRound,
 } from '../../storage/roundStorage';
 import type { Course } from '../../core/course';
@@ -29,6 +30,8 @@ import {
   getBetterballSideRosterLines,
 } from '../../core/scoring/betterballStableford';
 import { buildBetterballStablefordLeaderText } from '../../core/scoring/stablefordDisplay';
+import { getNonReturnFromHole, getPlayerStatus, isPlayerExcludedByNonReturn } from '../../core/scoring/stablefordState';
+import { getHoleParAndStrokeIndex } from '../../utils/holeMetaFromRound';
 import { liveStablefordStyles as styles } from './liveStablefordStyles';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'LiveBetterballStableford'>;
@@ -39,6 +42,10 @@ function parseScore(text: string): number | null {
   const n = Number(trimmed);
   if (!Number.isFinite(n)) return null;
   return n < 1 ? null : Math.floor(n);
+}
+
+function formatGrossEntry(value: number | null): string {
+  return value == null ? '' : String(value);
 }
 
 export default function LiveBetterballStablefordScreen({ navigation }: Props) {
@@ -98,13 +105,21 @@ export default function LiveBetterballStablefordScreen({ navigation }: Props) {
       roundComplete: !!round.isComplete,
     });
   }, [round, sideTotals.sideA, sideTotals.sideB]);
+  const currentHolePar = useMemo(() => {
+    if (!round) return null;
+    return getHoleParAndStrokeIndex(round, round.currentHole, course).par;
+  }, [round, course]);
 
   const holeHasDataMap = useMemo(() => {
     if (!round) return new Map<number, boolean>();
     return new Map(
       round.scores.map((hole) => [
         hole.holeNumber,
-        Object.values(hole.grossByPlayerId || {}).some((v) => v != null),
+        round.players.some((p) => {
+          if (isPlayerExcludedByNonReturn(round, p.id, hole.holeNumber)) return true;
+          const state = hole.scoreStateByPlayerId?.[p.id] ?? 'pending';
+          return state === 'entered' || state === 'pickup';
+        }),
       ])
     );
   }, [round]);
@@ -112,7 +127,11 @@ export default function LiveBetterballStablefordScreen({ navigation }: Props) {
   const completedCount = useMemo(() => {
     if (!round) return 0;
     return round.scores.filter((hole) =>
-      Object.values(hole.grossByPlayerId || {}).some((v) => v != null)
+      round.players.every((p) => {
+        if (isPlayerExcludedByNonReturn(round, p.id, hole.holeNumber)) return true;
+        const state = hole.scoreStateByPlayerId?.[p.id] ?? 'pending';
+        return state === 'entered' || state === 'pickup';
+      })
     ).length;
   }, [round]);
 
@@ -135,6 +154,7 @@ export default function LiveBetterballStablefordScreen({ navigation }: Props) {
 
   async function updateScore(playerId: string, value: string) {
     if (!round || !currentHoleData) return;
+    if (isPlayerExcludedByNonReturn(round, playerId, round.currentHole)) return;
     const parsed = parseScore(value);
     const nextScores = round.scores.map((hole) => {
       if (hole.holeNumber !== round.currentHole) return hole;
@@ -142,27 +162,78 @@ export default function LiveBetterballStablefordScreen({ navigation }: Props) {
         ...hole.grossByPlayerId,
         [playerId]: parsed,
       };
+      const nextStateByPlayerId: Record<string, HoleScoreState> = {
+        ...(hole.scoreStateByPlayerId || {}),
+        [playerId]: parsed == null ? 'pending' : 'entered',
+      };
       const nextPointsByPlayerId: Record<string, number | null> = {
         ...(hole.pointsByPlayerId || {}),
       };
       for (const p of round.players) {
         const g = nextGrossByPlayerId[p.id];
         const gross = typeof g === 'number' ? g : null;
+        const state = nextStateByPlayerId[p.id] ?? 'pending';
         nextPointsByPlayerId[p.id] = getStablefordPointsForPlayer(
           round,
           p,
           round.currentHole,
           course,
-          gross
+          gross,
+          state
         );
       }
       return {
         ...hole,
         grossByPlayerId: nextGrossByPlayerId,
+        scoreStateByPlayerId: nextStateByPlayerId,
         pointsByPlayerId: nextPointsByPlayerId,
       };
     });
     await persist({ ...round, scores: nextScores });
+  }
+
+  async function markPickup(playerId: string) {
+    if (!round || !currentHoleData) return;
+    if (isPlayerExcludedByNonReturn(round, playerId, round.currentHole)) return;
+    const nextScores = round.scores.map((hole) => {
+      if (hole.holeNumber !== round.currentHole) return hole;
+      const nextGrossByPlayerId = { ...hole.grossByPlayerId, [playerId]: null };
+      const nextStateByPlayerId: Record<string, HoleScoreState> = {
+        ...(hole.scoreStateByPlayerId || {}),
+        [playerId]: 'pickup',
+      };
+      const nextPointsByPlayerId: Record<string, number | null> = { ...(hole.pointsByPlayerId || {}) };
+      for (const p of round.players) {
+        const g = nextGrossByPlayerId[p.id];
+        const gross = typeof g === 'number' ? g : null;
+        const state = nextStateByPlayerId[p.id] ?? 'pending';
+        nextPointsByPlayerId[p.id] = getStablefordPointsForPlayer(round, p, round.currentHole, course, gross, state);
+      }
+      return { ...hole, grossByPlayerId: nextGrossByPlayerId, scoreStateByPlayerId: nextStateByPlayerId, pointsByPlayerId: nextPointsByPlayerId };
+    });
+    await persist({ ...round, scores: nextScores });
+  }
+
+  async function markNonReturn(playerId: string) {
+    if (!round) return;
+    Alert.alert('Mark player as NR?', 'This marks the player as Non Return for the rest of the round. Existing holes stay visible.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Mark NR',
+        style: 'destructive',
+        onPress: () => {
+          const next = {
+            ...round,
+            playerStatusById: { ...(round.playerStatusById || {}), [playerId]: 'non_return' as const },
+            nonReturnFromHoleByPlayerId: {
+              ...(round.nonReturnFromHoleByPlayerId || {}),
+              [playerId]: getNonReturnFromHole(round, playerId) ?? round.currentHole,
+            },
+          };
+          void persist(next);
+        },
+      },
+    ]);
   }
 
   async function handleFinishRound() {
@@ -206,6 +277,110 @@ export default function LiveBetterballStablefordScreen({ navigation }: Props) {
   const sideA = round.players.slice(0, 2);
   const sideB = round.players.slice(2, 4);
 
+  function renderBetterballPlayerRow(
+    player: (typeof round.players)[number],
+    sideBest: number | null | undefined
+  ) {
+    const value = currentHoleData.grossByPlayerId?.[player.id];
+    const gross = typeof value === 'number' ? value : null;
+    const state =
+      currentHoleData.scoreStateByPlayerId?.[player.id] ?? (gross != null ? 'entered' : 'pending');
+    const isNR = isPlayerExcludedByNonReturn(round, player.id, round.currentHole);
+    const breakdown = getStablefordHoleBreakdownForPlayer(
+      round,
+      player,
+      round.currentHole,
+      course,
+      gross,
+      state
+    );
+    const pts = getStablefordPointsForPlayer(round, player, round.currentHole, course, gross, state);
+    const pPts = holePoints?.pointsByPlayerId[player.id];
+    const isCounting = pPts != null && sideBest != null && pPts === sideBest;
+    const pointsStyle = [
+      styles.pointsBox,
+      pts == null
+        ? styles.pointsBoxEmpty
+        : isCounting
+          ? styles.pointsBoxGood
+          : pts >= 1
+            ? styles.pointsBoxActive
+            : styles.pointsBoxLow,
+    ];
+    const name = (player.name ?? '').trim() || 'Player';
+    const roundPts = sideTotals.byPlayerId[player.id] ?? 0;
+    const playerNr = getPlayerStatus(round, player.id) === 'non_return';
+
+    return (
+      <View key={player.id} style={styles.betterballPlayerBlock}>
+        <View style={styles.betterballPlayerHeader}>
+          <Text style={styles.betterballPlayerName} numberOfLines={1} ellipsizeMode="tail">
+            {name}
+          </Text>
+          {isCounting ? (
+            <>
+              <Text style={styles.betterballHeaderSep}>•</Text>
+              <Text style={styles.betterballCounting}>Counting</Text>
+            </>
+          ) : null}
+          <Text style={styles.betterballHeaderSep}>•</Text>
+          <Text style={styles.betterballPtsMuted}>Pts: {roundPts}</Text>
+        </View>
+        {playerNr ? (
+          <Text style={styles.betterballNrLine}>
+            NR from hole {getNonReturnFromHole(round, player.id) ?? round.currentHole}
+          </Text>
+        ) : null}
+        <View style={styles.scoreBoxesRowBetterball}>
+          <View style={styles.scoreBoxGroupBetterball}>
+            <Text style={styles.scoreBoxLabel}>Gross</Text>
+            <TextInput
+              value={state === 'pickup' ? 'PU' : isNR ? 'NR' : formatGrossEntry(gross)}
+              onChangeText={(v) => void updateScore(player.id, v)}
+              style={styles.scoreInput}
+              keyboardType="number-pad"
+              inputMode="numeric"
+              editable={!isNR && state !== 'pickup'}
+              placeholder={isNR ? 'NR' : '—'}
+              placeholderTextColor="#9ca3af"
+            />
+          </View>
+          <View style={styles.scoreBoxGroupBetterball}>
+            <Text style={styles.scoreBoxLabelMuted}>Net</Text>
+            <View style={styles.miniBox}>
+              <Text style={styles.miniBoxText}>{breakdown ? breakdown.net : '—'}</Text>
+            </View>
+          </View>
+          <View style={styles.scoreBoxGroupBetterball}>
+            <Text style={styles.scoreBoxLabelMuted}>Pts</Text>
+            <View style={pointsStyle}>
+              <Text style={styles.pointsBoxText}>{isNR ? 'NR' : pts == null ? '—' : pts}</Text>
+            </View>
+          </View>
+          <View style={styles.scoreBoxGroupBetterball}>
+            <Text style={styles.scoreBoxLabelMuted}>State</Text>
+            <Pressable
+              style={[styles.miniBox, isNR && { opacity: 0.45 }]}
+              onPress={() => void markPickup(player.id)}
+              disabled={isNR}
+            >
+              <Text style={styles.miniBoxText}>PU</Text>
+            </Pressable>
+          </View>
+          <View style={styles.scoreBoxGroupBetterball}>
+            <Text style={styles.scoreBoxLabelMuted}>Round</Text>
+            <Pressable
+              style={[styles.miniBox, playerNr && { borderColor: '#f87171' }]}
+              onPress={() => void markNonReturn(player.id)}
+            >
+              <Text style={styles.miniBoxText}>NR</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.flex}
@@ -236,6 +411,9 @@ export default function LiveBetterballStablefordScreen({ navigation }: Props) {
         <View style={styles.holeHero}>
           <Text style={styles.holeHeroLabel}>CURRENT HOLE</Text>
           <Text style={styles.holeHeroNumber}>{round.currentHole}</Text>
+          <Text style={styles.holeHeroMeta}>
+            {`Hole ${round.currentHole} of 18${currentHolePar != null ? ` • Par ${currentHolePar}` : ''}`}
+          </Text>
           <Text style={styles.holeHeroMeta}>Holes with scores: {completedCount} / 18</Text>
         </View>
 
@@ -275,69 +453,7 @@ export default function LiveBetterballStablefordScreen({ navigation }: Props) {
             Side A total: {sideTotals.sideA} pts
             {holePoints?.sideABest != null ? ` · this hole best: ${holePoints.sideABest}` : ''}
           </Text>
-          {sideA.map((player) => {
-            const value = currentHoleData.grossByPlayerId?.[player.id];
-            const gross = typeof value === 'number' ? value : null;
-            const breakdown = getStablefordHoleBreakdownForPlayer(
-              round,
-              player,
-              round.currentHole,
-              course,
-              gross
-            );
-            const pts = breakdown?.points ?? null;
-            const pPts = holePoints?.pointsByPlayerId[player.id];
-            const isCounting =
-              pPts != null && holePoints?.sideABest != null && pPts === holePoints.sideABest;
-            const pointsStyle = [
-              styles.pointsBox,
-              pts == null
-                ? styles.pointsBoxEmpty
-                : isCounting
-                  ? styles.pointsBoxGood
-                  : pts >= 1
-                    ? styles.pointsBoxActive
-                    : styles.pointsBoxLow,
-            ];
-            const name = (player.name ?? '').trim() || 'Player';
-            return (
-              <View key={player.id} style={styles.playerScoreRow}>
-                <View style={styles.playerMeta}>
-                  <Text style={styles.playerName}>
-                    {name} {isCounting ? '(counting)' : ''}
-                  </Text>
-                  <Text style={styles.playerSub}>
-                    Round pts: {sideTotals.byPlayerId[player.id] ?? 0} (individual sum)
-                  </Text>
-                </View>
-                <View style={styles.scoreBoxesWrap}>
-                  <View style={styles.scoreBoxGroup}>
-                    <Text style={styles.scoreBoxLabel}>Gross</Text>
-                    <TextInput
-                      value={value == null ? '' : String(value)}
-                      onChangeText={(v) => void updateScore(player.id, v)}
-                      style={styles.scoreInput}
-                      keyboardType="number-pad"
-                      placeholder="—"
-                      placeholderTextColor="#9ca3af"
-                    />
-                  </View>
-                  <View style={styles.scoreBoxGroup}>
-                    <Text style={styles.scoreBoxLabelMuted}>Net</Text>
-                    <View style={styles.miniBox}>
-                      <Text style={styles.miniBoxText}>{breakdown ? breakdown.net : '—'}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.scoreBoxGroup}>
-                    <Text style={styles.scoreBoxLabelMuted}>Pts</Text>
-                    <View style={pointsStyle}>
-                      <Text style={styles.pointsBoxText}>{pts == null ? '—' : pts}</Text>
-                    </View>
-                  </View>
-                </View>
-              </View>
-            );
-          })}
+          {sideA.map((player) => renderBetterballPlayerRow(player, holePoints?.sideABest))}
         </View>
 
         <View style={styles.card}>
@@ -346,69 +462,7 @@ export default function LiveBetterballStablefordScreen({ navigation }: Props) {
             Side B total: {sideTotals.sideB} pts
             {holePoints?.sideBBest != null ? ` · this hole best: ${holePoints.sideBBest}` : ''}
           </Text>
-          {sideB.map((player) => {
-            const value = currentHoleData.grossByPlayerId?.[player.id];
-            const gross = typeof value === 'number' ? value : null;
-            const breakdown = getStablefordHoleBreakdownForPlayer(
-              round,
-              player,
-              round.currentHole,
-              course,
-              gross
-            );
-            const pts = breakdown?.points ?? null;
-            const pPts = holePoints?.pointsByPlayerId[player.id];
-            const isCounting =
-              pPts != null && holePoints?.sideBBest != null && pPts === holePoints.sideBBest;
-            const pointsStyle = [
-              styles.pointsBox,
-              pts == null
-                ? styles.pointsBoxEmpty
-                : isCounting
-                  ? styles.pointsBoxGood
-                  : pts >= 1
-                    ? styles.pointsBoxActive
-                    : styles.pointsBoxLow,
-            ];
-            const name = (player.name ?? '').trim() || 'Player';
-            return (
-              <View key={player.id} style={styles.playerScoreRow}>
-                <View style={styles.playerMeta}>
-                  <Text style={styles.playerName}>
-                    {name} {isCounting ? '(counting)' : ''}
-                  </Text>
-                  <Text style={styles.playerSub}>
-                    Round pts: {sideTotals.byPlayerId[player.id] ?? 0} (individual sum)
-                  </Text>
-                </View>
-                <View style={styles.scoreBoxesWrap}>
-                  <View style={styles.scoreBoxGroup}>
-                    <Text style={styles.scoreBoxLabel}>Gross</Text>
-                    <TextInput
-                      value={value == null ? '' : String(value)}
-                      onChangeText={(v) => void updateScore(player.id, v)}
-                      style={styles.scoreInput}
-                      keyboardType="number-pad"
-                      placeholder="—"
-                      placeholderTextColor="#9ca3af"
-                    />
-                  </View>
-                  <View style={styles.scoreBoxGroup}>
-                    <Text style={styles.scoreBoxLabelMuted}>Net</Text>
-                    <View style={styles.miniBox}>
-                      <Text style={styles.miniBoxText}>{breakdown ? breakdown.net : '—'}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.scoreBoxGroup}>
-                    <Text style={styles.scoreBoxLabelMuted}>Pts</Text>
-                    <View style={pointsStyle}>
-                      <Text style={styles.pointsBoxText}>{pts == null ? '—' : pts}</Text>
-                    </View>
-                  </View>
-                </View>
-              </View>
-            );
-          })}
+          {sideB.map((player) => renderBetterballPlayerRow(player, holePoints?.sideBBest))}
         </View>
 
         <View style={styles.card}>

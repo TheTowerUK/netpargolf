@@ -18,9 +18,12 @@ import {
   loadCurrentRound,
   saveCurrentRound,
   type PersistedPlayer,
+  type PersistedRound,
   type RoundingMode,
 } from '../storage/roundStorage';
 import { COMPETITION_OPTIONS, type RoundCompetition } from '../types/competition';
+import { getCompetitionLabel, getCompetitionShortLabel } from '../utils/competitionLabels';
+import { navigateToLiveForCompetition } from '../utils/competitionNavigation';
 import type { Course, CourseTee } from '../core/course';
 import { loadActiveCourse } from '../storage/courseStorage';
 import { hasMissingStrokeIndex } from '../utils/courseValidation';
@@ -35,23 +38,6 @@ import {
 } from '../core/handicap';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RoundSetup'>;
-
-function navigateToLiveForCompetition(
-  navigation: Props['navigation'],
-  comp: RoundCompetition
-) {
-  if (comp === 'singles_matchplay') {
-    navigation.navigate('LiveSinglesMatchplay');
-  } else if (comp === 'fourball_betterball_matchplay') {
-    navigation.navigate('LiveFourballBetterballMatchplay');
-  } else if (comp === 'individual_stableford') {
-    navigation.navigate('LiveIndividualStableford');
-  } else if (comp === 'betterball_stableford') {
-    navigation.navigate('LiveBetterballStableford');
-  } else {
-    navigation.navigate('RoundScoring');
-  }
-}
 
 function makeId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
@@ -140,9 +126,9 @@ export default function RoundSetupScreen({ navigation, route }: Props) {
   const [allowancePercent, setAllowancePercent] = useState('100');
   const [roundingMode, setRoundingMode] = useState<RoundingMode>('round');
   const [players, setPlayers] = useState<PersistedPlayer[]>([makeBlankPlayer()]);
-  const [hasExistingRound, setHasExistingRound] = useState(false);
+  const [activeRound, setActiveRound] = useState<PersistedRound | null>(null);
   const [course, setCourse] = useState<Course | null>(null);
-  const [selectedTeeName, setSelectedTeeName] = useState<string>('Yellow');
+  const [selectedTeeIndex, setSelectedTeeIndex] = useState(0);
   const [selectedShotsPreviewPlayerId, setSelectedShotsPreviewPlayerId] = useState<string | null>(null);
   /** Text shown in HI field while typing (avoids losing a trailing "." before digits). */
   const [handicapIndexDraftById, setHandicapIndexDraftById] = useState<Record<string, string>>({});
@@ -156,10 +142,10 @@ export default function RoundSetupScreen({ navigation, route }: Props) {
         loadActiveCourse(),
       ]);
       if (!mounted) return;
-      setHasExistingRound(!!existing);
+      setActiveRound(existing);
       setCourse(activeCourse);
       if (activeCourse?.tees?.length) {
-        setSelectedTeeName(activeCourse.tees[0].name);
+        setSelectedTeeIndex(0);
       }
     })();
 
@@ -189,8 +175,9 @@ export default function RoundSetupScreen({ navigation, route }: Props) {
 
   const selectedTee: CourseTee | null = useMemo(() => {
     if (!course?.tees?.length) return null;
-    return course.tees.find((tee) => tee.name === selectedTeeName) ?? null;
-  }, [course, selectedTeeName]);
+    const index = Math.min(Math.max(0, selectedTeeIndex), course.tees.length - 1);
+    return course.tees[index] ?? null;
+  }, [course, selectedTeeIndex]);
 
   function recalcPlayerHandicaps(nextPlayers: PersistedPlayer[]): PersistedPlayer[] {
     return calculateCompetitionHandicaps({
@@ -409,7 +396,7 @@ export default function RoundSetupScreen({ navigation, route }: Props) {
 
   useEffect(() => {
     setPlayers((prev) => recalcPlayerHandicaps(prev));
-  }, [selectedTeeName, allowancePercent, roundingMode, course, competition]);
+  }, [selectedTeeIndex, allowancePercent, roundingMode, course, competition]);
 
   async function handleResumeRound() {
     const existing = await loadCurrentRound();
@@ -431,7 +418,7 @@ export default function RoundSetupScreen({ navigation, route }: Props) {
           style: 'destructive',
           onPress: async () => {
             await clearCurrentRound();
-            setHasExistingRound(false);
+            setActiveRound(null);
             Alert.alert('Cleared', 'Saved round data has been removed.');
           },
         },
@@ -483,29 +470,29 @@ export default function RoundSetupScreen({ navigation, route }: Props) {
       competition,
       allowancePercent: parsedAllowance,
       roundingMode,
-      teeName: selectedTeeName,
+      teeName: selectedTee?.name ?? null,
       players: persistedPlayers,
     });
 
     await saveCurrentRound(round);
-    setHasExistingRound(true);
+    setActiveRound(round);
     navigateToLiveForCompetition(navigation, competition);
   }
 
   async function handleStartRound() {
-    if (hasExistingRound) {
-      Alert.alert(
-        'Replace saved round?',
-        'Starting a new round will overwrite the current saved round.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Start New Round',
-            style: 'destructive',
-            onPress: createAndStartRound,
-          },
-        ]
-      );
+    if (activeRound) {
+      const replaceMessage =
+        activeRound.competition === competition
+          ? 'Starting a new round will overwrite the current saved round.'
+          : `You have an active ${getCompetitionLabel(activeRound.competition)} round. Starting ${getCompetitionShortLabel(competition)} will replace it.`;
+      Alert.alert('Replace saved round?', replaceMessage, [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Start New Round',
+          style: 'destructive',
+          onPress: createAndStartRound,
+        },
+      ]);
       return;
     }
 
@@ -556,12 +543,12 @@ export default function RoundSetupScreen({ navigation, route }: Props) {
           <StrokeIndexWarningBanner onPressFix={() => navigation.navigate('CourseSetup')} />
         )}
 
-        {hasExistingRound && (
+        {activeRound && activeRound.competition === competition ? (
           <View style={styles.warningCard}>
-            <Text style={styles.warningTitle}>Saved round detected</Text>
+            <Text style={styles.warningTitle}>Active round for this competition</Text>
             <Text style={styles.warningText}>
-              There is already a saved round on this device. You can resume it,
-              clear it, or start a new round which will replace it.
+              Hole {activeRound.currentHole} of 18 · You can resume scoring or clear this round to
+              set up a new one.
             </Text>
 
             <View style={styles.warningActionRow}>
@@ -574,7 +561,28 @@ export default function RoundSetupScreen({ navigation, route }: Props) {
               </Pressable>
             </View>
           </View>
-        )}
+        ) : null}
+
+        {activeRound && activeRound.competition !== competition ? (
+          <View style={styles.warningCard}>
+            <Text style={styles.warningTitle}>Different active round</Text>
+            <Text style={styles.warningText}>
+              You currently have an active {getCompetitionLabel(activeRound.competition)} round.
+              Starting {getCompetitionShortLabel(competition)} will require clearing or replacing
+              the active round.
+            </Text>
+
+            <View style={styles.warningActionRow}>
+              <Pressable style={styles.resumeBtn} onPress={handleResumeRound}>
+                <Text style={styles.resumeBtnText}>Resume Active Round</Text>
+              </Pressable>
+
+              <Pressable style={styles.clearBtn} onPress={handleClearOldRound}>
+                <Text style={styles.clearBtnText}>Clear Active Round</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
 
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Competition</Text>
@@ -628,13 +636,13 @@ export default function RoundSetupScreen({ navigation, route }: Props) {
           {course?.tees?.length ? (
             <>
               <View style={styles.optionGroup}>
-                {course.tees.map((tee) => {
-                  const isSelected = selectedTee?.name === tee.name;
+                {course.tees.map((tee, index) => {
+                  const isSelected = selectedTeeIndex === index;
                   return (
                     <Pressable
-                      key={tee.name}
+                      key={`${tee.name}-${index}`}
                       style={[styles.optionChip, isSelected && styles.optionChipSelected]}
-                      onPress={() => setSelectedTeeName(tee.name)}
+                      onPress={() => setSelectedTeeIndex(index)}
                     >
                       <Text
                         style={[

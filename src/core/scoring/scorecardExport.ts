@@ -58,7 +58,7 @@ function renderNineTable(
         .map((h) => {
           const i = h - 1;
           const g = p.scores[i];
-          const gross = typeof g === 'number' ? String(g) : '';
+          const gross = typeof g === 'number' ? String(g) : g;
           const n = showNet && courseReady && p.netsPerHole[i] != null ? String(p.netsPerHole[i]) : '';
           return renderCell(courseReady && showNet, gross, n || undefined);
         })
@@ -76,7 +76,7 @@ function renderNineTable(
       return `
         <tr>
           <td class="player">
-            ${escapeHtml(p.name)} <span class="hcp-inline">(${p.playingHandicap})</span>
+            ${escapeHtml(p.name)}${p.isNonReturn ? ' <span class="hcp-inline">(NR)</span>' : ''} <span class="hcp-inline">(${p.playingHandicap})</span>
           </td>
           <td>${p.playingHandicap}</td>
           ${holeCells}

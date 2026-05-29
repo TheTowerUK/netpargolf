@@ -4,6 +4,7 @@ import type { RoundCompetition } from '../types/competition';
 
 export type RootStackParamList = {
   Home: undefined;
+  CompetitionHandicapChecker: undefined;
   HelpPractice: undefined;
   CourseSetup: undefined;
   CourseSearch: undefined;

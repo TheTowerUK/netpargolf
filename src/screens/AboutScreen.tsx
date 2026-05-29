@@ -51,7 +51,7 @@ export default function AboutScreen() {
           </Card>
         </Section>
 
-        <Section title="Course Data & Stroke Index Information">
+        <Section title="Course Data, Stroke Index & Saved Courses">
           <Card>
             <Text style={styles.body}>
               NetParGolf uses publicly available golf course data to provide course

@@ -73,8 +73,12 @@ export function buildIndividualStablefordScorecardSummary(
     rankedPlayers: ranked,
     roundComplete: !!round.isComplete,
   });
-  const lines = ranked.map((p) => `${displayPlayerName({ name: p.name }, 'Player')}: ${p.points} pts`);
-  return { title: b.title, subtitle: b.subtitle, lines };
+  const linesWithNr = ranked.map((p) => {
+    const row = rows.find((r) => r.id === p.id);
+    if (row?.isNonReturn) return `${displayPlayerName({ name: p.name }, 'Player')}: NR`;
+    return `${displayPlayerName({ name: p.name }, 'Player')}: ${p.points} pts`;
+  });
+  return { title: b.title, subtitle: b.subtitle, lines: linesWithNr };
 }
 
 export function buildBetterballStablefordScorecardSummary(

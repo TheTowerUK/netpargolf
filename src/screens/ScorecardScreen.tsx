@@ -237,7 +237,7 @@ export default function ScorecardScreen({ route }: Props) {
     }
   };
 
-  const hasData = rows.some((r) => r.scores.some((v) => typeof v === 'number'));
+  const hasData = rows.some((r) => r.scores.some((v) => v !== ''));
 
   return (
     <View style={styles.screen}>
@@ -446,7 +446,9 @@ export default function ScorecardScreen({ route }: Props) {
             <View key={r.id} style={[styles.row, idx % 2 === 1 ? styles.altRow : null]}>
               <View style={[styles.cell, styles.playerCell]}>
                 <Text style={styles.playerText}>
-                  {r.name} <Text style={styles.hcpInline}>({r.playingHandicap})</Text>
+                  {r.name}
+                  {r.isNonReturn ? <Text style={[styles.hcpInline, { color: '#dc2626' }]}> (NR)</Text> : null}
+                  <Text style={styles.hcpInline}> ({r.playingHandicap})</Text>
                 </Text>
               </View>
 
@@ -459,7 +461,7 @@ export default function ScorecardScreen({ route }: Props) {
                 const v = r.scores[i];
                 return (
                   <View key={h} style={[styles.cell, styles.holeCell]}>
-                    <Text style={styles.scoreText}>{typeof v === 'number' ? String(v) : ''}</Text>
+                    <Text style={styles.scoreText}>{typeof v === 'number' ? String(v) : v}</Text>
                     {courseReady &&
                     competitionUi.showNet &&
                     typeof v === 'number' &&

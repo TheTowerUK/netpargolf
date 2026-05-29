@@ -296,6 +296,7 @@ export default function LiveFourballBetterballMatchplayScreen({ navigation }: Pr
                       onChangeText={(v) => void updateScore(player.id, v)}
                       style={styles.scoreInput}
                       keyboardType="number-pad"
+                      inputMode="numeric"
                       placeholder="-"
                       placeholderTextColor="#9ca3af"
                     />
@@ -340,6 +341,7 @@ export default function LiveFourballBetterballMatchplayScreen({ navigation }: Pr
                       onChangeText={(v) => void updateScore(player.id, v)}
                       style={styles.scoreInput}
                       keyboardType="number-pad"
+                      inputMode="numeric"
                       placeholder="-"
                       placeholderTextColor="#9ca3af"
                     />

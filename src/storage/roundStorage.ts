@@ -3,6 +3,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { RoundCompetition } from '../types/competition';
 
 export type RoundingMode = 'floor' | 'round' | 'ceil';
+export type HoleScoreState = 'pending' | 'entered' | 'pickup';
+export type PlayerRoundStatus = 'active' | 'non_return';
 
 export type PersistedPlayer = {
   id: string;
@@ -21,6 +23,7 @@ export type PersistedPlayer = {
 export type PersistedHoleScore = {
   holeNumber: number;
   grossByPlayerId: Record<string, number | null>;
+  scoreStateByPlayerId?: Record<string, HoleScoreState>;
   pointsByPlayerId?: Record<string, number | null>;
 };
 
@@ -36,6 +39,8 @@ export type PersistedRound = {
 
   players: PersistedPlayer[];
   scores: PersistedHoleScore[];
+  playerStatusById?: Record<string, PlayerRoundStatus>;
+  nonReturnFromHoleByPlayerId?: Record<string, number | null>;
 
   currentHole: number;
   isComplete?: boolean;
@@ -48,12 +53,38 @@ function makeEmptyScores(players: PersistedPlayer[]): PersistedHoleScore[] {
   return Array.from({ length: 18 }, (_, i) => ({
     holeNumber: i + 1,
     grossByPlayerId: Object.fromEntries(players.map((p) => [p.id, null])),
+    scoreStateByPlayerId: Object.fromEntries(players.map((p) => [p.id, 'pending' as HoleScoreState])),
     pointsByPlayerId: Object.fromEntries(players.map((p) => [p.id, null])),
   }));
 }
 
 function optFiniteNumber(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+function normaliseGrossEntry(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function normaliseScoreState(
+  rawState: unknown,
+  rawGross: unknown,
+  normalisedGross: number | null
+): HoleScoreState {
+  if (rawState === 'pickup' || rawState === 'entered' || rawState === 'pending') {
+    return rawState;
+  }
+  if (rawGross === 'PU') return 'pickup';
+  if (normalisedGross != null) return 'entered';
+  return 'pending';
+}
+
+function normalisePlayerStatus(rawStatus: unknown): PlayerRoundStatus {
+  return rawStatus === 'non_return' ? 'non_return' : 'active';
+}
+
+function normaliseNonReturnFromHole(raw: unknown): number | null {
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= 18 ? raw : null;
 }
 
 function normalisePlayer(player: any): PersistedPlayer | null {
@@ -107,12 +138,17 @@ function normaliseRound(raw: any): PersistedRound | null {
     const existingHole = rawScores.find((s) => s?.holeNumber === holeNumber);
 
     const grossByPlayerId: Record<string, number | null> = {};
+    const scoreStateByPlayerId: Record<string, HoleScoreState> = {};
     const pointsByPlayerId: Record<string, number | null> = {};
 
     for (const player of players) {
       const value = existingHole?.grossByPlayerId?.[player.id];
-      grossByPlayerId[player.id] =
-        typeof value === 'number' && Number.isFinite(value) ? value : null;
+      grossByPlayerId[player.id] = normaliseGrossEntry(value);
+      scoreStateByPlayerId[player.id] = normaliseScoreState(
+        existingHole?.scoreStateByPlayerId?.[player.id],
+        value,
+        grossByPlayerId[player.id]
+      );
 
       const points = existingHole?.pointsByPlayerId?.[player.id];
       pointsByPlayerId[player.id] =
@@ -122,9 +158,19 @@ function normaliseRound(raw: any): PersistedRound | null {
     return {
       holeNumber,
       grossByPlayerId,
+      scoreStateByPlayerId,
       pointsByPlayerId,
     };
   });
+
+  const playerStatusById: Record<string, PlayerRoundStatus> = {};
+  const nonReturnFromHoleByPlayerId: Record<string, number | null> = {};
+  for (const player of players) {
+    playerStatusById[player.id] = normalisePlayerStatus(raw.playerStatusById?.[player.id]);
+    nonReturnFromHoleByPlayerId[player.id] = normaliseNonReturnFromHole(
+      raw.nonReturnFromHoleByPlayerId?.[player.id]
+    );
+  }
 
   const competition: RoundCompetition = normalizeCompetition(
     typeof raw.competition === 'string' ? raw.competition : undefined
@@ -171,6 +217,8 @@ function normaliseRound(raw: any): PersistedRound | null {
     teeName: typeof raw.teeName === 'string' ? raw.teeName : null,
     players,
     scores,
+    playerStatusById,
+    nonReturnFromHoleByPlayerId,
     currentHole,
     isComplete: raw.isComplete === true,
     completedAt:
@@ -208,6 +256,8 @@ export function buildInitialRound(params: {
     teeName: params.teeName ?? null,
     players,
     scores: makeEmptyScores(players),
+    playerStatusById: Object.fromEntries(players.map((p) => [p.id, 'active' as PlayerRoundStatus])),
+    nonReturnFromHoleByPlayerId: Object.fromEntries(players.map((p) => [p.id, null])),
     currentHole: 1,
     isComplete: false,
     completedAt: null,

@@ -1,7 +1,8 @@
 import type { Course } from '../course';
 import type { PersistedPlayer, PersistedRound } from '../../storage/roundStorage';
 import { getGrossForHole, strokesBasisForAllocation } from '../../utils/scoreboardHelpers';
-import { getStablefordHoleBreakdownForPlayer } from './individualStableford';
+import { getStablefordHoleBreakdownForPlayer, getStablefordPointsForPlayer } from './individualStableford';
+import { getHoleScoreState, isPlayerExcludedByNonReturn } from './stablefordState';
 
 const HOLES = Array.from({ length: 18 }, (_, i) => i + 1);
 
@@ -9,7 +10,8 @@ export type ScorecardPlayerRowData = {
   id: string;
   name: string;
   playingHandicap: number;
-  scores: (number | '')[];
+  scores: (number | 'PU' | 'NR' | '')[];
+  isNonReturn: boolean;
   netsPerHole: (number | null)[];
   pointsPerHole: (number | null)[];
   out: number;
@@ -39,8 +41,11 @@ export function buildScorecardPlayerRows(
     const playingHandicap = basis != null && Number.isFinite(basis) ? basis : 0;
 
     const scores = HOLES.map((h) => {
+      if (isPlayerExcludedByNonReturn(round, p.id, h)) return 'NR';
       const gross = getGrossForHole(round, h, p.id);
-      return typeof gross === 'number' ? gross : '';
+      const state = getHoleScoreState(round, h, p.id, gross);
+      if (state === 'pickup') return 'PU';
+      return state === 'entered' && typeof gross === 'number' ? gross : '';
     });
 
     let netsPerHole: (number | null)[];
@@ -49,14 +54,15 @@ export function buildScorecardPlayerRows(
       netsPerHole = HOLES.map((h) => {
         const g = scores[h - 1];
         const gross = typeof g === 'number' ? g : null;
-        const b = getStablefordHoleBreakdownForPlayer(round, p, h, course, gross);
+        const state = getHoleScoreState(round, h, p.id, gross);
+        const b = getStablefordHoleBreakdownForPlayer(round, p, h, course, gross, state);
         return b?.net ?? null;
       });
       pointsPerHole = HOLES.map((h) => {
         const g = scores[h - 1];
         const gross = typeof g === 'number' ? g : null;
-        const b = getStablefordHoleBreakdownForPlayer(round, p, h, course, gross);
-        return b?.points ?? null;
+        const state = getHoleScoreState(round, h, p.id, gross);
+        return getStablefordPointsForPlayer(round, p, h, course, gross, state);
       });
     } else {
       netsPerHole = HOLES.map(() => null);
@@ -79,6 +85,7 @@ export function buildScorecardPlayerRows(
       id: p.id,
       name: p.name,
       playingHandicap,
+      isNonReturn: round.playerStatusById?.[p.id] === 'non_return',
       scores,
       netsPerHole,
       pointsPerHole,

@@ -318,6 +318,7 @@ export default function LiveSinglesMatchplayScreen({ navigation }: Props) {
                       onChangeText={(v) => void updateScore(player.id, v)}
                       style={styles.scoreInput}
                       keyboardType="number-pad"
+                      inputMode="numeric"
                       placeholder="-"
                       placeholderTextColor="#9ca3af"
                     />

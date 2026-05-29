@@ -28,6 +28,7 @@ import {
   getSinglesStandingsScoreMain,
 } from '../core/scoring/matchplayDisplay';
 import { buildBetterballStablefordLeaderText } from '../core/scoring/stablefordDisplay';
+import { getPlayerStatus } from '../core/scoring/stablefordState';
 import { hapticTap, hapticSuccess, hapticError } from '../utils/feedback';
 import { useToast } from '../components/Toast';
 import PrimaryButton from '../components/PrimaryButton';
@@ -395,12 +396,15 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
     }
 
     if (isBetterballStableford && activeRound?.players.length === 4) {
+      const nrNames = activeRound.players
+        .filter((p) => getPlayerStatus(activeRound, p.id) === 'non_return')
+        .map((p) => getSafeName(p.name));
       if (!betterballSideTotals) {
         const r = getFourballSideRosterLines(activeRound.players);
         return {
           title: 'Betterball Stableford',
           subtitle: 'Course Par and Stroke Index required for side totals',
-          supportingText: `${r.sideALine} · ${r.sideBLine}`,
+          supportingText: `${r.sideALine} · ${r.sideBLine}${nrNames.length ? ` · NR: ${nrNames.join(', ')}` : ''}`,
         };
       }
       const bb = buildBetterballStablefordLeaderText({
@@ -412,7 +416,7 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
       return {
         title: bb.title,
         subtitle: bb.subtitle,
-        supportingText: bb.supportingText,
+        supportingText: `${bb.supportingText ?? ''}${nrNames.length ? `${bb.supportingText ? ' · ' : ''}NR: ${nrNames.join(', ')}` : ''}`,
       };
     }
 
@@ -706,9 +710,11 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
           id: p.id,
           name: p.name,
           pts: totalsByPlayerId[p.id] ?? 0,
+          isNR: getPlayerStatus(activeRound, p.id) === 'non_return',
         }))
         .sort(
           (a, b) =>
+            Number(a.isNR) - Number(b.isNR) ||
             b.pts - a.pts ||
             getSafeName(a.name).localeCompare(getSafeName(b.name), undefined, {
               sensitivity: 'base',
@@ -723,10 +729,10 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
       return rankedPlayers.map((p, i) => ({
         id: p.id,
         rank: i + 1,
-        name: getSafeName(p.name),
-        subtitle: `Total · ${p.pts} Stableford pts`,
-        scoreMain: String(p.pts),
-        scoreSub: 'pts',
+        name: `${getSafeName(p.name)}${p.isNR ? ' (NR)' : ''}`,
+        subtitle: p.isNR ? 'Non Return' : `Total · ${p.pts} Stableford pts`,
+        scoreMain: p.isNR ? 'NR' : String(p.pts),
+        scoreSub: p.isNR ? undefined : 'pts',
         isWinner: complete && soleLeader && leaderIds.has(p.id),
       }));
     }

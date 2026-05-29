@@ -34,6 +34,9 @@ import {
   getCourseById,
   clearCourse,
 } from '../storage/courseStorage';
+import { exportCourseToJsonFile } from '../storage/courseJsonExport';
+import { buildCourseImportPreviewMessage, pickAndReadCourseJson } from '../storage/courseJsonImport';
+import type { ImportedCourseResult } from '../storage/courseJsonImport';
 import { loadCurrentRound, hasInProgressRound } from '../storage/roundStorage';
 import { hapticTap, hapticSuccess, hapticError } from '../utils/feedback';
 import { useToast } from '../components/Toast';
@@ -76,14 +79,18 @@ export default function CourseSetupScreen() {
     return null;
   }
 
-  function updateTeeField(teeName: CourseTee['name'], field: 'par' | 'courseRating' | 'slopeRating', raw: string) {
+  function updateTeeField(
+    teeIndex: number,
+    field: 'par' | 'courseRating' | 'slopeRating',
+    raw: string
+  ) {
     const asNumber = Number(raw.replace(',', '.'));
     const nextValue = Number.isFinite(asNumber) ? asNumber : 0;
 
     setCourse((prev) => ({
       ...prev,
-      tees: (prev.tees ?? DEFAULT_TEES).map((tee) =>
-        tee.name === teeName
+      tees: (prev.tees ?? DEFAULT_TEES).map((tee, index) =>
+        index === teeIndex
           ? {
               ...tee,
               [field]: field === 'courseRating' ? nextValue : Math.round(nextValue),
@@ -333,6 +340,95 @@ export default function CourseSetupScreen() {
     }
   };
 
+  const onExportCourseJson = async () => {
+    hapticTap();
+    try {
+      await exportCourseToJsonFile(withDefaultTees(course));
+      hapticSuccess();
+      Alert.alert('Export complete', 'Course exported and ready to share.');
+    } catch {
+      hapticError();
+      Alert.alert('Export failed', 'Could not export this course right now. Please try again.');
+    }
+  };
+
+  const saveImportedCourse = async (nextCourse: Course, mode: 'replace' | 'new') => {
+    const targetCourse =
+      mode === 'new'
+        ? { ...nextCourse, id: `course-${Date.now()}` }
+        : nextCourse;
+    await upsertCourse(withDefaultTees(targetCourse));
+    await setActiveCourseId(targetCourse.id);
+    await refreshData();
+    hapticSuccess();
+    Alert.alert('Import complete', 'Course imported successfully.');
+  };
+
+  const proceedAfterImportConfirmed = (imported: ImportedCourseResult) => {
+    const exactMatch =
+      savedCourses.find((c) => c.id === imported.course.id) ??
+      savedCourses.find(
+        (c) => c.course.name.trim().toLowerCase() === imported.course.name.trim().toLowerCase()
+      );
+
+    if (exactMatch) {
+      Alert.alert(
+        'Course already exists',
+        `A matching course was found (${exactMatch.course.name}). Replace it or save as new?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Save as New',
+            onPress: () => {
+              void saveImportedCourse(imported.course, 'new');
+            },
+          },
+          {
+            text: 'Replace',
+            style: 'destructive',
+            onPress: () => {
+              void saveImportedCourse({ ...imported.course, id: exactMatch.id }, 'replace');
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    void saveImportedCourse(imported.course, 'new');
+  };
+
+  const onImportCourseJson = async () => {
+    hapticTap();
+    try {
+      const imported = await pickAndReadCourseJson();
+      if (!imported) return;
+      if (!isValidCourse(imported.course)) {
+        hapticError();
+        Alert.alert(
+          'Invalid course file',
+          'This file does not look like a valid NetParGolf course file.'
+        );
+        return;
+      }
+
+      const previewMessage = buildCourseImportPreviewMessage(imported);
+      Alert.alert('Import this course?', previewMessage, [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Import',
+          onPress: () => proceedAfterImportConfirmed(imported),
+        },
+      ]);
+    } catch {
+      hapticError();
+      Alert.alert(
+        'Import failed',
+        'This file does not look like a valid NetParGolf course file.'
+      );
+    }
+  };
+
   if (loading) {
     return (
       <View style={styles.container}>
@@ -349,34 +445,39 @@ export default function CourseSetupScreen() {
     >
       <ScrollView contentContainerStyle={styles.container}>
         <Text style={styles.title}>Course Setup</Text>
-        <Text style={styles.subTitle}>Set Par and Stroke Index for holes 1–18. This will lock Live Scoring.</Text>
+        <Text style={styles.subTitle}>Find, review, edit or share a course before starting a round.</Text>
 
         {hasMissingStrokeIndex(course) && <StrokeIndexWarningBanner />}
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Next step</Text>
+          <Text style={styles.cardTitle}>Find or Select Course</Text>
           <Text style={styles.muted}>
-            Save or confirm the course details here, then continue to Round Setup for competition and player details.
+            Search online, import a shared course file, or select one of your saved courses.
+          </Text>
+          <Text style={styles.hint}>
+            {savedCourses.length > 0
+              ? `${savedCourses.length} saved course${savedCourses.length === 1 ? '' : 's'} available.`
+              : 'No saved courses yet.'}
           </Text>
 
           <View style={styles.actionsRow}>
             <PrimaryButton
-              title="Save Course"
-              onPress={onSave}
-              disabled={!courseValid || editingLocked}
-              loading={saveBusy}
-              variant="primary"
+              title="Find course (free tier)"
+              onPress={() => navigation.navigate('CourseSearch')}
+              variant="secondary"
+              style={styles.findCourseBtn}
+              textStyle={{ color: colors.primary }}
             />
             <PrimaryButton
-              title="Continue to Round Setup"
-              onPress={onContinueToRoundSetup}
-              disabled={!courseValid}
+              title="Import Course"
+              onPress={onImportCourseJson}
               variant="secondary"
             />
           </View>
         </View>
 
         <View style={styles.card}>
+          <Text style={styles.cardTitle}>Selected Course</Text>
           <View style={styles.activeBanner}>
             <View style={styles.activeBannerRow}>
               <Text style={styles.activeLabel}>Selected course</Text>
@@ -402,90 +503,17 @@ export default function CourseSetupScreen() {
             {course.holesNote ? (
               <Text style={styles.defaultedHint}>{course.holesNote} You can edit below.</Text>
             ) : null}
+            {siDuplicateWarning ? (
+              <Text style={styles.warning}>
+                Stroke Index duplicates: {siDuplicateWarning}
+              </Text>
+            ) : null}
             {editingLocked ? (
               <View style={styles.roundInProgressBanner}>
                 <Text style={styles.roundInProgressText}>Round in progress — editing course may affect scoring.</Text>
               </View>
             ) : null}
           </View>
-
-          <Text style={styles.label}>Course name</Text>
-          <TextInput
-            style={[styles.input, editingLocked && styles.inputDisabled]}
-            value={course.name}
-            onChangeText={(v) => setCourse((p) => ({ ...p, name: v }))}
-            placeholder="e.g. Woburn Marquess"
-            placeholderTextColor="#999"
-            editable={!editingLocked}
-          />
-
-          <Text style={[styles.label, { marginTop: 12 }]}>Tee ratings</Text>
-          <Text style={styles.hint}>
-            Tee-level Par, Course Rating and Slope Rating are used for automatic handicap conversion.
-          </Text>
-          {(course.tees ?? DEFAULT_TEES).map((tee) => (
-            <View key={tee.name} style={styles.teeEditorCard}>
-              <Text style={styles.teeEditorTitle}>{tee.name}</Text>
-              <View style={styles.teeEditorRow}>
-                <View style={styles.teeEditorField}>
-                  <Text style={styles.teeFieldLabel}>Par</Text>
-                  <TextInput
-                    value={String(tee.par)}
-                    onChangeText={(v) => updateTeeField(tee.name, 'par', v)}
-                    keyboardType="number-pad"
-                    style={[styles.input, editingLocked && styles.inputDisabled]}
-                    editable={!editingLocked}
-                    placeholder="72"
-                    placeholderTextColor="#999"
-                  />
-                </View>
-                <View style={styles.teeEditorField}>
-                  <Text style={styles.teeFieldLabel}>Course Rating</Text>
-                  <TextInput
-                    value={String(tee.courseRating)}
-                    onChangeText={(v) => updateTeeField(tee.name, 'courseRating', v)}
-                    keyboardType="decimal-pad"
-                    style={[styles.input, editingLocked && styles.inputDisabled]}
-                    editable={!editingLocked}
-                    placeholder="72.1"
-                    placeholderTextColor="#999"
-                  />
-                </View>
-                <View style={styles.teeEditorField}>
-                  <Text style={styles.teeFieldLabel}>Slope Rating</Text>
-                  <TextInput
-                    value={String(tee.slopeRating)}
-                    onChangeText={(v) => updateTeeField(tee.name, 'slopeRating', v)}
-                    keyboardType="number-pad"
-                    style={[styles.input, editingLocked && styles.inputDisabled]}
-                    editable={!editingLocked}
-                    placeholder="113"
-                    placeholderTextColor="#999"
-                  />
-                </View>
-              </View>
-            </View>
-          ))}
-          {teeValidationError ? <Text style={styles.warning}>{teeValidationError}</Text> : null}
-
-          {siDuplicateWarning ? (
-            <>
-              <Text style={styles.warning}>
-                Stroke Index duplicates: {siDuplicateWarning}
-              </Text>
-              <Text style={styles.hint}>Once SI is unique 1–18, Save Course will enable.</Text>
-            </>
-          ) : (
-            <Text style={styles.hint}>Tip: SI should be 1–18 uniquely (1 = hardest).</Text>
-          )}
-
-          <PrimaryButton
-            title="Find course (free tier)"
-            onPress={() => navigation.navigate('CourseSearch')}
-            variant="secondary"
-            style={styles.findCourseBtn}
-            textStyle={{ color: colors.primary }}
-          />
         </View>
 
         <View style={styles.card}>
@@ -572,6 +600,79 @@ export default function CourseSetupScreen() {
         </View>
 
         <View style={styles.card}>
+          <Text style={styles.cardTitle}>Tee Ratings / Course Details</Text>
+          <Text style={styles.label}>Course name</Text>
+          <TextInput
+            style={[styles.input, editingLocked && styles.inputDisabled]}
+            value={course.name}
+            onChangeText={(v) => setCourse((p) => ({ ...p, name: v }))}
+            placeholder="e.g. Woburn Marquess"
+            placeholderTextColor="#999"
+            editable={!editingLocked}
+          />
+
+          <Text style={[styles.label, { marginTop: 12 }]}>Tee ratings</Text>
+          <Text style={styles.hint}>
+            Tee-level Par, Course Rating and Slope Rating are used for automatic handicap conversion.
+          </Text>
+          {(course.tees ?? DEFAULT_TEES).map((tee, teeIndex) => (
+            <View key={`${tee.name}-${teeIndex}`} style={styles.teeEditorCard}>
+              <Text style={styles.teeEditorTitle}>{tee.name}</Text>
+              <View style={styles.teeEditorRow}>
+                <View style={styles.teeEditorField}>
+                  <Text style={styles.teeFieldLabel}>Par</Text>
+                  <TextInput
+                    value={String(tee.par)}
+                    onChangeText={(v) => updateTeeField(teeIndex, 'par', v)}
+                    keyboardType="number-pad"
+                    style={[styles.input, editingLocked && styles.inputDisabled]}
+                    editable={!editingLocked}
+                    placeholder="72"
+                    placeholderTextColor="#999"
+                  />
+                </View>
+                <View style={styles.teeEditorField}>
+                  <Text style={styles.teeFieldLabel}>Course Rating</Text>
+                  <TextInput
+                    value={String(tee.courseRating)}
+                    onChangeText={(v) => updateTeeField(teeIndex, 'courseRating', v)}
+                    keyboardType="decimal-pad"
+                    style={[styles.input, editingLocked && styles.inputDisabled]}
+                    editable={!editingLocked}
+                    placeholder="72.1"
+                    placeholderTextColor="#999"
+                  />
+                </View>
+                <View style={styles.teeEditorField}>
+                  <Text style={styles.teeFieldLabel}>Slope Rating</Text>
+                  <TextInput
+                    value={String(tee.slopeRating)}
+                    onChangeText={(v) => updateTeeField(teeIndex, 'slopeRating', v)}
+                    keyboardType="number-pad"
+                    style={[styles.input, editingLocked && styles.inputDisabled]}
+                    editable={!editingLocked}
+                    placeholder="113"
+                    placeholderTextColor="#999"
+                  />
+                </View>
+              </View>
+            </View>
+          ))}
+          {teeValidationError ? <Text style={styles.warning}>{teeValidationError}</Text> : null}
+
+          {siDuplicateWarning ? (
+            <>
+              <Text style={styles.warning}>
+                Stroke Index duplicates: {siDuplicateWarning}
+              </Text>
+              <Text style={styles.hint}>Once SI is unique 1–18, Save Course will enable.</Text>
+            </>
+          ) : (
+            <Text style={styles.hint}>Tip: SI should be 1–18 uniquely (1 = hardest).</Text>
+          )}
+        </View>
+
+        <View style={styles.card}>
           <View style={styles.holesHeaderRow}>
             <Text style={styles.cardTitle}>Holes</Text>
             <Text style={styles.holesHelperText}>
@@ -632,7 +733,10 @@ export default function CourseSetupScreen() {
               </View>
             ))}
           </View>
+        </View>
 
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Actions</Text>
           <View style={styles.actionsRow}>
             <PrimaryButton
               title="Save Course"
@@ -642,6 +746,18 @@ export default function CourseSetupScreen() {
               variant="primary"
               accessibilityLabel="Save course"
               accessibilityHint="Saves the course Par and Stroke Index for scoring"
+            />
+            <PrimaryButton
+              title="Continue to Round Setup"
+              onPress={onContinueToRoundSetup}
+              disabled={!courseValid}
+              variant="secondary"
+            />
+            <PrimaryButton
+              title="Export Course"
+              onPress={onExportCourseJson}
+              disabled={!courseValid}
+              variant="secondary"
             />
             <PrimaryButton
               title="Reset Defaults"

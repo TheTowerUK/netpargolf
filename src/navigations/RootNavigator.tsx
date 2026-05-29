@@ -23,6 +23,7 @@ import ScorecardScreen from '../screens/ScorecardScreen';
 import AboutScreen from '../screens/AboutScreen';
 import RoundHistoryScreen from '../screens/RoundHistoryScreen';
 import StatsScreen from '../screens/StatsScreen';
+import CompetitionHandicapCheckerScreen from '../screens/CompetitionHandicapCheckerScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -75,6 +76,11 @@ export default function RootNavigator() {
         <Stack.Screen name="CourseSearch" component={CourseSearchScreen} options={{ title: 'Find a course' }} />
         <Stack.Screen name="RoundHistory" component={RoundHistoryScreen} options={{ title: 'Round History' }} />
         <Stack.Screen name="Stats" component={StatsScreen} options={{ title: 'Stats' }} />
+        <Stack.Screen
+          name="CompetitionHandicapChecker"
+          component={CompetitionHandicapCheckerScreen}
+          options={{ title: 'Competition Handicap Checker' }}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );

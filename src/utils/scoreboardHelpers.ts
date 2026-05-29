@@ -7,6 +7,7 @@ import type { Course } from '../core/course';
 import { scoreHoleOptionA, sumBestN } from '../core/scoring';
 import type { RoundingModeInput } from '../core/scoring';
 import { strokesBasisForAllocation } from '../core/scoring/strokesBasis';
+import { getStablefordPointsForPlayer } from '../core/scoring/individualStableford';
 import type { MatchSummary } from '../types/matchSummary';
 import { computeSinglesMatchplayMatchSummary } from '../core/scoring/singlesMatchplay';
 import { formatClosedMatchplayResult } from '../core/scoring/matchplayDisplay';
@@ -40,10 +41,12 @@ export function getMatchHoleOutcome(
 
   const playerGross = hole.grossByPlayerId?.[playerId] ?? null;
   const opponentGross = hole.grossByPlayerId?.[opponentId] ?? null;
+  const playerGrossNum = typeof playerGross === 'number' ? playerGross : null;
+  const opponentGrossNum = typeof opponentGross === 'number' ? opponentGross : null;
 
-  if (playerGross == null || opponentGross == null) return null;
-  if (playerGross < opponentGross) return 'win';
-  if (playerGross > opponentGross) return 'loss';
+  if (playerGrossNum == null || opponentGrossNum == null) return null;
+  if (playerGrossNum < opponentGrossNum) return 'win';
+  if (playerGrossNum > opponentGrossNum) return 'loss';
   return 'halved';
 }
 
@@ -80,12 +83,14 @@ export function computeMatchSummary(
   for (const hole of round.scores) {
     const a = hole.grossByPlayerId?.[playerA.id] ?? null;
     const b = hole.grossByPlayerId?.[playerB.id] ?? null;
+    const aNum = typeof a === 'number' ? a : null;
+    const bNum = typeof b === 'number' ? b : null;
 
-    if (a == null || b == null) continue;
+    if (aNum == null || bNum == null) continue;
 
     holesCompleted += 1;
-    if (a < b) aWins += 1;
-    else if (b < a) bWins += 1;
+    if (aNum < bNum) aWins += 1;
+    else if (bNum < aNum) bWins += 1;
   }
 
   const diff = aWins - bWins;
@@ -185,21 +190,33 @@ export function computeScoreboardTotals(params: {
 
     for (const p of round.players) {
       const gross = holeData?.grossByPlayerId?.[p.id];
+      const state = holeData?.scoreStateByPlayerId?.[p.id];
       const playingHcp = strokesBasisForAllocation(p, round);
-
-      if (gross == null || !Number.isFinite(gross) || playingHcp == null) continue;
+      const grossNum = typeof gross === 'number' ? gross : null;
+      if (isBetterballStableford || isIndividualStableford) {
+        const pts = getStablefordPointsForPlayer(round, p, h, course, grossNum, state);
+        if (pts == null) continue;
+        const idx = players.findIndex((x) => x.id === p.id);
+        if (idx >= 0) {
+          players[idx].points += pts;
+          if (grossNum != null) players[idx].gross += grossNum;
+        }
+        holePointsByPlayerId[p.id] = pts;
+        continue;
+      }
+      if (grossNum == null || !Number.isFinite(grossNum) || playingHcp == null) continue;
       try {
         const b = scoreHoleOptionA({
           courseHandicap: playingHcp,
           allowancePercent: 1,
           roundingMode: rm,
           hole: { par: par as number, strokeIndex: si as number },
-          gross,
+          gross: grossNum,
         });
         const idx = players.findIndex((x) => x.id === p.id);
         if (idx >= 0) {
           players[idx].points += b.points;
-          players[idx].gross += gross;
+          players[idx].gross += grossNum;
         }
         holePointsByPlayerId[p.id] = b.points;
       } catch {

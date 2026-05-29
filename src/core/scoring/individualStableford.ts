@@ -1,8 +1,9 @@
 import type { Course } from '../course';
-import type { PersistedPlayer, PersistedRound } from '../../storage/roundStorage';
+import type { HoleScoreState, PersistedPlayer, PersistedRound } from '../../storage/roundStorage';
 import { scoreHoleOptionA, type RoundingMode } from '../scoring';
 import { strokesBasisForAllocation } from './strokesBasis';
 import { getHoleParAndStrokeIndex } from '../../utils/holeMetaFromRound';
+import { getHoleScoreState, isPlayerExcludedByNonReturn } from './stablefordState';
 
 function roundingModeForScore(round: PersistedRound): RoundingMode {
   const rmRaw = round.roundingMode ?? 'round';
@@ -25,8 +26,13 @@ export function getStablefordPointsForPlayer(
   player: PersistedPlayer,
   holeNumber: number,
   course: Course | null,
-  gross: number | null
+  gross: number | null,
+  state?: HoleScoreState
 ): number | null {
+  if (isPlayerExcludedByNonReturn(round, player.id, holeNumber)) return null;
+  const resolvedState = state ?? getHoleScoreState(round, holeNumber, player.id, gross);
+  if (resolvedState === 'pickup') return 0;
+  if (resolvedState !== 'entered') return null;
   const b = getStablefordHoleBreakdownForPlayer(round, player, holeNumber, course, gross);
   return b?.points ?? null;
 }
@@ -36,8 +42,12 @@ export function getStablefordHoleBreakdownForPlayer(
   player: PersistedPlayer,
   holeNumber: number,
   course: Course | null,
-  gross: number | null
+  gross: number | null,
+  state?: HoleScoreState
 ): StablefordHoleBreakdown | null {
+  if (isPlayerExcludedByNonReturn(round, player.id, holeNumber)) return null;
+  const resolvedState = state ?? getHoleScoreState(round, holeNumber, player.id, gross);
+  if (resolvedState !== 'entered') return null;
   if (gross == null || !Number.isFinite(gross)) return null;
 
   const { par, strokeIndex } = getHoleParAndStrokeIndex(round, holeNumber, course);
@@ -78,9 +88,9 @@ export function getIndividualStablefordRunningTotals(
   for (const hole of round.scores) {
     const hn = hole.holeNumber;
     for (const p of round.players) {
-      const gross = hole.grossByPlayerId?.[p.id];
-      const g = typeof gross === 'number' ? gross : null;
-      const pts = getStablefordPointsForPlayer(round, p, hn, course, g);
+      const gross = hole.grossByPlayerId?.[p.id] ?? null;
+      const state = hole.scoreStateByPlayerId?.[p.id];
+      const pts = getStablefordPointsForPlayer(round, p, hn, course, gross, state);
       if (pts != null) totals[p.id] = (totals[p.id] ?? 0) + pts;
     }
   }
