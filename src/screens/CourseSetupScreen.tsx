@@ -34,8 +34,15 @@ import {
   getCourseById,
   clearCourse,
 } from '../storage/courseStorage';
-import { exportCourseToJsonFile } from '../storage/courseJsonExport';
-import { buildCourseImportPreviewMessage, pickAndReadCourseJson } from '../storage/courseJsonImport';
+import {
+  CourseExportError,
+  exportCourseToJsonFile,
+} from '../storage/courseJsonExport';
+import {
+  buildCourseImportPreviewMessage,
+  CourseImportError,
+  pickAndReadCourseJson,
+} from '../storage/courseJsonImport';
 import type { ImportedCourseResult } from '../storage/courseJsonImport';
 import { loadCurrentRound, hasInProgressRound } from '../storage/roundStorage';
 import { hapticTap, hapticSuccess, hapticError } from '../utils/feedback';
@@ -71,6 +78,18 @@ const COURSE_CENTERED_SUCCESS_MS = 1800;
 
 function centeredCourseSuccessToast(subtext: string): ToastShowOptions {
   return { placement: 'center', subtext };
+}
+
+function courseExportErrorMessage(error: unknown): string {
+  if (error instanceof CourseExportError) return error.message;
+  if (error instanceof Error && error.message) return error.message;
+  return 'Could not export this course right now. Please try again.';
+}
+
+function courseImportErrorMessage(error: unknown): string {
+  if (error instanceof CourseImportError) return error.message;
+  if (error instanceof Error && error.message) return error.message;
+  return 'Could not import this course right now. Please try again.';
 }
 
 function buildCourseRatingDrafts(tees: CourseTee[]): Record<number, string> {
@@ -452,27 +471,34 @@ export default function CourseSetupScreen() {
         COURSE_CENTERED_SUCCESS_MS,
         centeredCourseSuccessToast('Ready to share')
       );
-    } catch {
+    } catch (error) {
+      console.error('[CourseSetup] export failed', error);
       hapticError();
-      toast.show('Could not export this course right now. Please try again.', 'error');
+      toast.show(courseExportErrorMessage(error), 'error');
     }
   };
 
   const saveImportedCourse = async (nextCourse: Course, mode: 'replace' | 'new') => {
-    const targetCourse =
-      mode === 'new'
-        ? { ...nextCourse, id: `course-${Date.now()}` }
-        : nextCourse;
-    await upsertCourse(withDefaultTees(targetCourse));
-    await setActiveCourseId(targetCourse.id);
-    await refreshData();
-    hapticSuccess();
-    toast.show(
-      'Course imported',
-      'success',
-      COURSE_CENTERED_SUCCESS_MS,
-      centeredCourseSuccessToast('Ready for future rounds')
-    );
+    try {
+      const targetCourse =
+        mode === 'new'
+          ? { ...nextCourse, id: `course-${Date.now()}` }
+          : nextCourse;
+      await upsertCourse(withDefaultTees(targetCourse));
+      await setActiveCourseId(targetCourse.id);
+      await refreshData();
+      hapticSuccess();
+      toast.show(
+        'Course imported',
+        'success',
+        COURSE_CENTERED_SUCCESS_MS,
+        centeredCourseSuccessToast('Ready for future rounds')
+      );
+    } catch (error) {
+      console.error('[CourseSetup] import save failed', error);
+      hapticError();
+      toast.show('Could not save the imported course. Please try again.', 'error');
+    }
   };
 
   const proceedAfterImportConfirmed = (imported: ImportedCourseResult) => {
@@ -514,11 +540,12 @@ export default function CourseSetupScreen() {
     try {
       const imported = await pickAndReadCourseJson();
       if (!imported) return;
+
       if (!isValidCourse(imported.course)) {
         hapticError();
-        Alert.alert(
-          'Invalid course file',
-          'This file does not look like a valid NetParGolf course file.'
+        toast.show(
+          'This file does not look like a valid NetParGolf course file.',
+          'error'
         );
         return;
       }
@@ -528,15 +555,15 @@ export default function CourseSetupScreen() {
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Import',
-          onPress: () => proceedAfterImportConfirmed(imported),
+          onPress: () => {
+            void proceedAfterImportConfirmed(imported);
+          },
         },
       ]);
-    } catch {
+    } catch (error) {
+      console.error('[CourseSetup] import failed', error);
       hapticError();
-      Alert.alert(
-        'Import failed',
-        'This file does not look like a valid NetParGolf course file.'
-      );
+      toast.show(courseImportErrorMessage(error), 'error');
     }
   };
 

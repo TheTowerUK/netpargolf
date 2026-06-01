@@ -1,4 +1,10 @@
 import type { Course, CourseHole, CourseTee } from '../core/course';
+import {
+  loadExpoDocumentPicker,
+  loadExpoFileSystem,
+  parseDocumentPickerResult,
+  readUtf8FileFromUri,
+} from '../utils/expoDynamicModules';
 
 type ImportedHole = {
   holeNumber?: unknown;
@@ -33,6 +39,26 @@ export type ImportedCourseResult = {
   warnings: string[];
   sourceName: string;
 };
+
+export class CourseImportError extends Error {
+  constructor(
+    message: string,
+    readonly code:
+      | 'INVALID_JSON'
+      | 'INVALID_SCHEMA'
+      | 'UNSUPPORTED_VERSION'
+      | 'MISSING_COURSE'
+      | 'MISSING_COURSE_NAME'
+      | 'MISSING_TEES'
+      | 'INVALID_TEE'
+      | 'PICKER_FAILED'
+      | 'READ_FAILED'
+      | 'IMPORT_FAILED'
+  ) {
+    super(message);
+    this.name = 'CourseImportError';
+  }
+}
 
 /** Human-readable preview shown before confirming import. */
 export function buildCourseImportPreviewMessage(imported: ImportedCourseResult): string {
@@ -144,23 +170,47 @@ export function parseImportedCourseJson(rawText: string, sourceName: string): Im
   try {
     parsed = JSON.parse(rawText) as ImportedCoursePayload;
   } catch {
-    throw new Error('INVALID_JSON');
+    throw new CourseImportError(
+      'This file is not valid JSON.',
+      'INVALID_JSON'
+    );
   }
 
-  if (parsed.schema !== 'netpargolf-course') throw new Error('INVALID_SCHEMA');
-  if (parsed.version !== 1) throw new Error('UNSUPPORTED_VERSION');
-  if (!parsed.course || typeof parsed.course !== 'object') throw new Error('MISSING_COURSE');
+  if (parsed.schema !== 'netpargolf-course') {
+    throw new CourseImportError(
+      'This file is not a NetParGolf course file.',
+      'INVALID_SCHEMA'
+    );
+  }
+  if (parsed.version !== 1) {
+    throw new CourseImportError(
+      'This course file version is not supported.',
+      'UNSUPPORTED_VERSION'
+    );
+  }
+  if (!parsed.course || typeof parsed.course !== 'object') {
+    throw new CourseImportError('Course data is missing from this file.', 'MISSING_COURSE');
+  }
 
   const courseName = asString(parsed.course.courseName);
-  if (!courseName) throw new Error('MISSING_COURSE_NAME');
+  if (!courseName) {
+    throw new CourseImportError('Course name is missing from this file.', 'MISSING_COURSE_NAME');
+  }
   const teesRaw = Array.isArray(parsed.course.tees) ? parsed.course.tees : null;
-  if (!teesRaw || teesRaw.length === 0) throw new Error('MISSING_TEES');
+  if (!teesRaw || teesRaw.length === 0) {
+    throw new CourseImportError('No tees found in this file.', 'MISSING_TEES');
+  }
 
   const tees: CourseTee[] = [];
   const warnings: string[] = [];
   for (const teeRaw of teesRaw) {
     const normalized = normalizeTee((teeRaw ?? {}) as ImportedTee);
-    if (!normalized) throw new Error('INVALID_TEE');
+    if (!normalized) {
+      throw new CourseImportError(
+        'One or more tees in this file are invalid.',
+        'INVALID_TEE'
+      );
+    }
     tees.push(normalized.tee);
     warnings.push(...normalized.warnings);
   }
@@ -179,18 +229,37 @@ export function parseImportedCourseJson(rawText: string, sourceName: string): Im
 }
 
 export async function pickAndReadCourseJson(): Promise<ImportedCourseResult | null> {
-  const DocumentPicker = await import('expo-document-picker');
-  const FileSystem = await import('expo-file-system/legacy');
+  console.error('[CourseJsonImport] start');
 
-  const picked = await DocumentPicker.getDocumentAsync({
-    type: 'application/json',
-    copyToCacheDirectory: true,
-    multiple: false,
-  });
-  if (picked.canceled || !picked.assets?.length) return null;
-  const file = picked.assets[0];
-  const content = await FileSystem.readAsStringAsync(file.uri, {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
-  return parseImportedCourseJson(content, file.name || 'course.json');
+  try {
+    const DocumentPicker = await loadExpoDocumentPicker();
+    const FileSystem = await loadExpoFileSystem();
+    console.error('[CourseJsonImport] module keys', Object.keys(DocumentPicker ?? {}));
+    console.error('[CourseJsonImport] fileSystem keys', Object.keys(FileSystem ?? {}));
+    console.error('[CourseJsonImport] modules loaded');
+
+    const picked = await DocumentPicker.getDocumentAsync({
+      type: 'application/json',
+      copyToCacheDirectory: true,
+      multiple: false,
+    });
+
+    const selection = parseDocumentPickerResult(picked);
+    if (!selection) {
+      console.error('[CourseJsonImport] cancelled');
+      return null;
+    }
+
+    const content = await readUtf8FileFromUri(FileSystem, selection.uri);
+    console.error('[CourseJsonImport] file read', selection.name ?? selection.uri);
+
+    return parseImportedCourseJson(content, selection.name || 'course.json');
+  } catch (error) {
+    console.error('[CourseJsonImport] failed', error);
+    if (error instanceof CourseImportError) throw error;
+    throw new CourseImportError(
+      error instanceof Error ? error.message : 'Import failed',
+      'IMPORT_FAILED'
+    );
+  }
 }

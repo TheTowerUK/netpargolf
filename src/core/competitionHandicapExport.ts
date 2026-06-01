@@ -1,5 +1,13 @@
 import { Share } from 'react-native';
 import {
+  copyFileToDirectory,
+  getWritableStorageDirectory,
+  loadExpoFileSystem,
+  loadExpoPrint,
+  loadExpoSharing,
+  writeUtf8FileToDirectory,
+} from '../utils/expoDynamicModules';
+import {
   filterExportableHandicapPlayers,
   summarizeHandicapExportPlayers,
   type HandicapExportPayload,
@@ -254,32 +262,39 @@ function buildHandicapPdfFilename(payload: HandicapExportPayload): string {
 }
 
 export async function exportCompetitionPdf(payload: HandicapExportPayload): Promise<string> {
-  const Print = await import('expo-print');
-  const FileSystem = await import('expo-file-system/legacy');
-  const Sharing = await import('expo-sharing');
+  console.error('[CompetitionHandicapExport] pdf start');
 
-  const html = buildCompetitionSummaryHtml(payload);
-  const { uri } = await Print.printToFileAsync({ html });
-  const dir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
-  const filename = buildHandicapPdfFilename(payload);
-  const namedUri = dir ? `${dir}${filename}` : uri;
-  if (dir) {
-    await FileSystem.copyAsync({ from: uri, to: namedUri });
+  try {
+    const Print = await loadExpoPrint();
+    const FileSystem = await loadExpoFileSystem();
+    const Sharing = await loadExpoSharing();
+    console.error('[CompetitionHandicapExport] module keys', Object.keys(FileSystem ?? {}));
+
+    const html = buildCompetitionSummaryHtml(payload);
+    const { uri: printUri } = await Print.printToFileAsync({ html });
+    const filename = buildHandicapPdfFilename(payload);
+    const storageDir = getWritableStorageDirectory(FileSystem);
+    const namedUri = await copyFileToDirectory(FileSystem, printUri, storageDir, filename);
+    console.error('[CompetitionHandicapExport] pdf written', namedUri);
+
+    const shareOk = await Sharing.isAvailableAsync();
+    if (!shareOk) return namedUri;
+
+    await Sharing.shareAsync(namedUri, { mimeType: 'application/pdf' });
+    return namedUri;
+  } catch (error) {
+    console.error('[CompetitionHandicapExport] pdf failed', error);
+    throw error;
   }
-  const shareOk = await Sharing.isAvailableAsync();
-  if (!shareOk) return namedUri;
-  await Sharing.shareAsync(namedUri, { mimeType: 'application/pdf' });
-  return namedUri;
 }
 
 export async function saveCompetitionSummaryTextFile(payload: HandicapExportPayload): Promise<string> {
-  const FileSystem = await import('expo-file-system/legacy');
-  const dir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
-  if (!dir) throw new Error('Storage not available');
+  const FileSystem = await loadExpoFileSystem();
   const filename = `netpargolf-handicap-summary-${Date.now()}.txt`;
-  const uri = `${dir}${filename}`;
-  await FileSystem.writeAsStringAsync(uri, buildCompetitionSummaryText(payload), {
-    encoding: FileSystem.EncodingType.UTF8,
-  });
-  return uri;
+  return writeUtf8FileToDirectory(
+    FileSystem,
+    getWritableStorageDirectory(FileSystem),
+    filename,
+    buildCompetitionSummaryText(payload)
+  );
 }
