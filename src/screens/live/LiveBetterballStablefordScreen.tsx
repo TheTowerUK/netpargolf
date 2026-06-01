@@ -312,27 +312,27 @@ export default function LiveBetterballStablefordScreen({ navigation }: Props) {
     const playerNr = getPlayerStatus(round, player.id) === 'non_return';
 
     return (
-      <View key={player.id} style={styles.betterballPlayerBlock}>
-        <View style={styles.betterballPlayerHeader}>
-          <Text style={styles.betterballPlayerName} numberOfLines={1} ellipsizeMode="tail">
+      <View key={player.id} style={styles.stackedPlayerBlock}>
+        <View style={styles.stackedPlayerHeader}>
+          <Text style={styles.stackedPlayerName} numberOfLines={1} ellipsizeMode="tail">
             {name}
           </Text>
           {isCounting ? (
             <>
-              <Text style={styles.betterballHeaderSep}>•</Text>
-              <Text style={styles.betterballCounting}>Counting</Text>
+              <Text style={styles.stackedHeaderSep}>•</Text>
+              <Text style={styles.stackedCounting}>Counting</Text>
             </>
           ) : null}
-          <Text style={styles.betterballHeaderSep}>•</Text>
-          <Text style={styles.betterballPtsMuted}>Pts: {roundPts}</Text>
+          <Text style={styles.stackedHeaderSep}>•</Text>
+          <Text style={styles.stackedPtsMuted}>Pts: {roundPts}</Text>
         </View>
         {playerNr ? (
-          <Text style={styles.betterballNrLine}>
+          <Text style={styles.stackedNrLine}>
             NR from hole {getNonReturnFromHole(round, player.id) ?? round.currentHole}
           </Text>
         ) : null}
-        <View style={styles.scoreBoxesRowBetterball}>
-          <View style={styles.scoreBoxGroupBetterball}>
+        <View style={styles.scoreBoxesRowStacked}>
+          <View style={styles.scoreBoxGroupStacked}>
             <Text style={styles.scoreBoxLabel}>Gross</Text>
             <TextInput
               value={state === 'pickup' ? 'PU' : isNR ? 'NR' : formatGrossEntry(gross)}
@@ -345,19 +345,19 @@ export default function LiveBetterballStablefordScreen({ navigation }: Props) {
               placeholderTextColor="#9ca3af"
             />
           </View>
-          <View style={styles.scoreBoxGroupBetterball}>
+          <View style={styles.scoreBoxGroupStacked}>
             <Text style={styles.scoreBoxLabelMuted}>Net</Text>
             <View style={styles.miniBox}>
               <Text style={styles.miniBoxText}>{breakdown ? breakdown.net : '—'}</Text>
             </View>
           </View>
-          <View style={styles.scoreBoxGroupBetterball}>
+          <View style={styles.scoreBoxGroupStacked}>
             <Text style={styles.scoreBoxLabelMuted}>Pts</Text>
             <View style={pointsStyle}>
               <Text style={styles.pointsBoxText}>{isNR ? 'NR' : pts == null ? '—' : pts}</Text>
             </View>
           </View>
-          <View style={styles.scoreBoxGroupBetterball}>
+          <View style={styles.scoreBoxGroupStacked}>
             <Text style={styles.scoreBoxLabelMuted}>State</Text>
             <Pressable
               style={[styles.miniBox, isNR && { opacity: 0.45 }]}
@@ -367,7 +367,7 @@ export default function LiveBetterballStablefordScreen({ navigation }: Props) {
               <Text style={styles.miniBoxText}>PU</Text>
             </Pressable>
           </View>
-          <View style={styles.scoreBoxGroupBetterball}>
+          <View style={styles.scoreBoxGroupStacked}>
             <Text style={styles.scoreBoxLabelMuted}>Round</Text>
             <Pressable
               style={[styles.miniBox, playerNr && { borderColor: '#f87171' }]}

@@ -3,7 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigations/types';
-import { filterExportableHandicapPlayers } from '../core/competitionHandicapExport';
+import { filterExportableHandicapPlayers } from '../core/competitionHandicapUtils';
 import { loadCurrentRound, type PersistedRound } from '../storage/roundStorage';
 import { listCourses } from '../storage/courseStorage';
 import { listRounds } from '../storage/roundHistoryStorage';
@@ -25,11 +25,13 @@ type HomeTileConfig = {
 };
 
 function draftPlayersEntered(draft: CompetitionCheckerDraft): number {
-  const players = [...draft.teamA, ...draft.teamB].map((p) => {
-    const hiText = p.handicapIndexText.replace(',', '.').trim();
+  const teamA = Array.isArray(draft.teamA) ? draft.teamA : [];
+  const teamB = Array.isArray(draft.teamB) ? draft.teamB : [];
+  const players = [...teamA, ...teamB].map((p) => {
+    const hiText = String(p?.handicapIndexText ?? '').replace(',', '.').trim();
     const hi = hiText ? Number(hiText) : null;
     return {
-      name: p.name,
+      name: typeof p?.name === 'string' ? p.name : '',
       handicapIndex: hi != null && Number.isFinite(hi) ? hi : null,
       courseHandicap: null,
       playingHandicap: null,
@@ -62,7 +64,7 @@ function buildCheckerDraftSubtitle(draft: CompetitionCheckerDraft | null): strin
 }
 
 function buildLiveScoringSubtitle(round: PersistedRound | null): string | undefined {
-  if (!round) return undefined;
+  if (!round || typeof round.currentHole !== 'number') return undefined;
   return `Active round • ${getCompetitionLabel(round.competition)} • Hole ${round.currentHole} of 18`;
 }
 
@@ -101,12 +103,19 @@ export default function HomeScreen({ navigation }: Props) {
       listCourses(),
       listRounds(),
       loadCompetitionCheckerDraft(),
-    ]).then(([round, courses, rounds, draft]) => {
-      setActiveRound(round);
-      setSavedCourseCount(courses.length);
-      setRoundHistoryCount(rounds.length);
-      setCheckerDraft(draft);
-    });
+    ])
+      .then(([round, courses, rounds, draft]) => {
+        setActiveRound(round);
+        setSavedCourseCount(Array.isArray(courses) ? courses.length : 0);
+        setRoundHistoryCount(Array.isArray(rounds) ? rounds.length : 0);
+        setCheckerDraft(draft);
+      })
+      .catch(() => {
+        setActiveRound(null);
+        setSavedCourseCount(0);
+        setRoundHistoryCount(0);
+        setCheckerDraft(null);
+      });
   }, []);
 
   useFocusEffect(

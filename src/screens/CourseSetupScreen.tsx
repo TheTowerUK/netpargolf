@@ -39,8 +39,58 @@ import { buildCourseImportPreviewMessage, pickAndReadCourseJson } from '../stora
 import type { ImportedCourseResult } from '../storage/courseJsonImport';
 import { loadCurrentRound, hasInProgressRound } from '../storage/roundStorage';
 import { hapticTap, hapticSuccess, hapticError } from '../utils/feedback';
-import { useToast } from '../components/Toast';
+import { useToast, type ToastShowOptions } from '../components/Toast';
 import PrimaryButton from '../components/PrimaryButton';
+
+const DEFAULT_TEES: CourseTee[] = [
+  { name: 'White', par: 72, courseRating: 72, slopeRating: 113 },
+  { name: 'Yellow', par: 72, courseRating: 72, slopeRating: 113 },
+  { name: 'Red', par: 72, courseRating: 72, slopeRating: 113 },
+];
+
+function cleanCourseRatingInput(value: string): string {
+  return value
+    .replace(',', '.')
+    .replace(/[^0-9.]/g, '')
+    .replace(/(\..*)\./g, '$1');
+}
+
+function formatCourseRatingDisplay(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '';
+  return value.toFixed(1);
+}
+
+function parseCourseRatingDraft(cleaned: string): number | null {
+  const t = cleaned.trim();
+  if (!t || t === '.') return null;
+  const n = Number(t);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+const COURSE_CENTERED_SUCCESS_MS = 1800;
+
+function centeredCourseSuccessToast(subtext: string): ToastShowOptions {
+  return { placement: 'center', subtext };
+}
+
+function buildCourseRatingDrafts(tees: CourseTee[]): Record<number, string> {
+  return Object.fromEntries(
+    tees.map((tee, index) => [index, formatCourseRatingDisplay(tee.courseRating)])
+  );
+}
+
+function teesWithResolvedCourseRatings(
+  tees: CourseTee[],
+  drafts: Record<number, string>
+): CourseTee[] {
+  return tees.map((tee, index) => {
+    const cleaned = cleanCourseRatingInput(
+      drafts[index] ?? formatCourseRatingDisplay(tee.courseRating)
+    );
+    const parsed = parseCourseRatingDraft(cleaned);
+    return parsed != null ? { ...tee, courseRating: parsed } : tee;
+  });
+}
 
 export default function CourseSetupScreen() {
   const toast = useToast();
@@ -51,16 +101,26 @@ export default function CourseSetupScreen() {
   const [activeCourseId, setActiveCourseIdState] = useState<string | null>(null);
   const [roundInProgress, setRoundInProgress] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
-
-  const DEFAULT_TEES: CourseTee[] = [
-    { name: 'White', par: 72, courseRating: 72, slopeRating: 113 },
-    { name: 'Yellow', par: 72, courseRating: 72, slopeRating: 113 },
-    { name: 'Red', par: 72, courseRating: 72, slopeRating: 113 },
-  ];
+  const [courseRatingDraftByTeeIndex, setCourseRatingDraftByTeeIndex] = useState<
+    Record<number, string>
+  >(() => buildCourseRatingDrafts(DEFAULT_TEES));
 
   function withDefaultTees(next: Course): Course {
     if (Array.isArray(next.tees) && next.tees.length > 0) return next;
     return { ...next, tees: DEFAULT_TEES };
+  }
+
+  function applyCourse(next: Course) {
+    const withTees = withDefaultTees(next);
+    setCourse(withTees);
+    setCourseRatingDraftByTeeIndex(buildCourseRatingDrafts(withTees.tees ?? DEFAULT_TEES));
+  }
+
+  function resolveCourseForSave(base: Course): Course {
+    const tees = teesWithResolvedCourseRatings(base.tees ?? DEFAULT_TEES, courseRatingDraftByTeeIndex);
+    const resolved = withDefaultTees({ ...base, tees });
+    setCourseRatingDraftByTeeIndex(buildCourseRatingDrafts(tees));
+    return resolved;
   }
 
   function validateTees(tees: CourseTee[]): string | null {
@@ -79,25 +139,50 @@ export default function CourseSetupScreen() {
     return null;
   }
 
-  function updateTeeField(
-    teeIndex: number,
-    field: 'par' | 'courseRating' | 'slopeRating',
-    raw: string
-  ) {
+  function updateTeeField(teeIndex: number, field: 'par' | 'slopeRating', raw: string) {
     const asNumber = Number(raw.replace(',', '.'));
     const nextValue = Number.isFinite(asNumber) ? asNumber : 0;
 
     setCourse((prev) => ({
       ...prev,
       tees: (prev.tees ?? DEFAULT_TEES).map((tee, index) =>
-        index === teeIndex
-          ? {
-              ...tee,
-              [field]: field === 'courseRating' ? nextValue : Math.round(nextValue),
-            }
-          : tee
+        index === teeIndex ? { ...tee, [field]: Math.round(nextValue) } : tee
       ),
     }));
+  }
+
+  function updateCourseRatingDraft(teeIndex: number, raw: string) {
+    const cleaned = cleanCourseRatingInput(raw);
+    setCourseRatingDraftByTeeIndex((prev) => ({ ...prev, [teeIndex]: cleaned }));
+
+    const parsed = parseCourseRatingDraft(cleaned);
+    if (parsed == null) return;
+
+    setCourse((prev) => ({
+      ...prev,
+      tees: (prev.tees ?? DEFAULT_TEES).map((tee, index) =>
+        index === teeIndex ? { ...tee, courseRating: parsed } : tee
+      ),
+    }));
+  }
+
+  function finalizeCourseRatingDraft(teeIndex: number) {
+    setCourseRatingDraftByTeeIndex((prev) => {
+      const cleaned = cleanCourseRatingInput(prev[teeIndex] ?? '');
+      const parsed = parseCourseRatingDraft(cleaned);
+      const display = parsed != null ? formatCourseRatingDisplay(parsed) : cleaned;
+
+      if (parsed != null) {
+        setCourse((coursePrev) => ({
+          ...coursePrev,
+          tees: (coursePrev.tees ?? DEFAULT_TEES).map((t, index) =>
+            index === teeIndex ? { ...t, courseRating: parsed } : t
+          ),
+        }));
+      }
+
+      return { ...prev, [teeIndex]: display };
+    });
   }
 
   const refreshData = useCallback(async () => {
@@ -115,14 +200,14 @@ export default function CourseSetupScreen() {
         setActiveCourseIdState(activeId);
         setRoundInProgress(hasInProgressRound(round));
         const c = await loadActiveCourse();
-        setCourse(c && c.holes?.length === 18 ? withDefaultTees(c) : makeDefaultCourse());
+        applyCourse(c && c.holes?.length === 18 ? c : makeDefaultCourse());
       };
       await Promise.race([work(), timeoutPromise]);
     } catch {
       setSavedCourses([]);
       setActiveCourseIdState(null);
       setRoundInProgress(false);
-      setCourse(makeDefaultCourse());
+      applyCourse(makeDefaultCourse());
     }
   }, []);
 
@@ -134,7 +219,7 @@ export default function CourseSetupScreen() {
         try {
           await refreshData();
         } catch {
-          if (mounted) setCourse(makeDefaultCourse());
+          if (mounted) applyCourse(makeDefaultCourse());
         } finally {
           if (mounted) setLoading(false);
         }
@@ -188,11 +273,14 @@ export default function CourseSetupScreen() {
   };
 
   const onSave = async () => {
-    if (!isValidCourse(course) || teeValidationError) {
+    const resolved = resolveCourseForSave(course);
+    setCourse(resolved);
+    const teeErr = validateTees(resolved.tees ?? []);
+    if (!isValidCourse(resolved) || teeErr) {
       hapticError();
       Alert.alert(
         'Cannot save course',
-        teeValidationError ??
+        teeErr ??
           'Please ensure you have 18 holes, Par is set, and Stroke Index uses 1–18 uniquely.'
       );
       return;
@@ -200,11 +288,16 @@ export default function CourseSetupScreen() {
     hapticTap();
     setSaveBusy(true);
     try {
-      const id = await upsertCourse(withDefaultTees(course));
+      const id = await upsertCourse(resolved);
       await setActiveCourseId(id);
       await refreshData();
       hapticSuccess();
-      toast.show('Course saved', 'success');
+      toast.show(
+        'Course saved',
+        'success',
+        COURSE_CENTERED_SUCCESS_MS,
+        centeredCourseSuccessToast('Ready for future rounds')
+      );
     } catch (e) {
       hapticError();
       toast.show('Could not save. Try again.', 'error');
@@ -214,7 +307,7 @@ export default function CourseSetupScreen() {
   };
 
   const onReset = () => {
-    setCourse(makeDefaultCourse());
+    applyCourse(makeDefaultCourse());
   };
 
   const onClear = async () => {
@@ -230,7 +323,7 @@ export default function CourseSetupScreen() {
             hapticTap();
             try {
               await clearCourse();
-              setCourse(makeDefaultCourse());
+              applyCourse(makeDefaultCourse());
               await refreshData();
               hapticSuccess();
               toast.show('Cleared', 'success');
@@ -263,14 +356,14 @@ export default function CourseSetupScreen() {
     const c = await getCourseById(id);
     if (c) {
       await setActiveCourseId(id);
-      setCourse(c);
+      applyCourse(c);
       await refreshData();
     }
   };
 
   const onEdit = async (id: string) => {
     const c = await getCourseById(id);
-    if (c) setCourse(c);
+    if (c) applyCourse(c);
   };
 
   const onDelete = async (sc: StoredCourse) => {
@@ -292,7 +385,7 @@ export default function CourseSetupScreen() {
             try {
               await deleteCourse(sc.id);
               if (isActive) {
-                setCourse(makeDefaultCourse());
+                applyCourse(makeDefaultCourse());
               }
               await refreshData();
               hapticSuccess();
@@ -315,11 +408,14 @@ export default function CourseSetupScreen() {
   const onContinueToRoundSetup = async () => {
     hapticTap();
 
-    if (!isValidCourse(course) || teeValidationError) {
+    const resolved = resolveCourseForSave(course);
+    setCourse(resolved);
+    const teeErr = validateTees(resolved.tees ?? []);
+    if (!isValidCourse(resolved) || teeErr) {
       hapticError();
       Alert.alert(
         'Cannot continue',
-        teeValidationError ??
+        teeErr ??
           'Please ensure you have 18 holes, Par is set, and Stroke Index uses 1–18 uniquely.'
       );
       return;
@@ -327,10 +423,15 @@ export default function CourseSetupScreen() {
 
     setSaveBusy(true);
     try {
-      const id = await upsertCourse(withDefaultTees(course));
+      const id = await upsertCourse(resolved);
       await setActiveCourseId(id);
       hapticSuccess();
-      toast.show('Course saved', 'success');
+      toast.show(
+        'Course saved',
+        'success',
+        COURSE_CENTERED_SUCCESS_MS,
+        centeredCourseSuccessToast('Ready for future rounds')
+      );
       navigation.navigate('CompetitionSelect');
     } catch {
       hapticError();
@@ -343,12 +444,17 @@ export default function CourseSetupScreen() {
   const onExportCourseJson = async () => {
     hapticTap();
     try {
-      await exportCourseToJsonFile(withDefaultTees(course));
+      await exportCourseToJsonFile(resolveCourseForSave(course));
       hapticSuccess();
-      Alert.alert('Export complete', 'Course exported and ready to share.');
+      toast.show(
+        'Course exported',
+        'success',
+        COURSE_CENTERED_SUCCESS_MS,
+        centeredCourseSuccessToast('Ready to share')
+      );
     } catch {
       hapticError();
-      Alert.alert('Export failed', 'Could not export this course right now. Please try again.');
+      toast.show('Could not export this course right now. Please try again.', 'error');
     }
   };
 
@@ -361,7 +467,12 @@ export default function CourseSetupScreen() {
     await setActiveCourseId(targetCourse.id);
     await refreshData();
     hapticSuccess();
-    Alert.alert('Import complete', 'Course imported successfully.');
+    toast.show(
+      'Course imported',
+      'success',
+      COURSE_CENTERED_SUCCESS_MS,
+      centeredCourseSuccessToast('Ready for future rounds')
+    );
   };
 
   const proceedAfterImportConfirmed = (imported: ImportedCourseResult) => {
@@ -634,9 +745,14 @@ export default function CourseSetupScreen() {
                 <View style={styles.teeEditorField}>
                   <Text style={styles.teeFieldLabel}>Course Rating</Text>
                   <TextInput
-                    value={String(tee.courseRating)}
-                    onChangeText={(v) => updateTeeField(teeIndex, 'courseRating', v)}
+                    value={
+                      courseRatingDraftByTeeIndex[teeIndex] ??
+                      formatCourseRatingDisplay(tee.courseRating)
+                    }
+                    onChangeText={(v) => updateCourseRatingDraft(teeIndex, v)}
+                    onBlur={() => finalizeCourseRatingDraft(teeIndex)}
                     keyboardType="decimal-pad"
+                    inputMode="decimal"
                     style={[styles.input, editingLocked && styles.inputDisabled]}
                     editable={!editingLocked}
                     placeholder="72.1"

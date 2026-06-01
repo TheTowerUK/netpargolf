@@ -19,9 +19,9 @@ import { applyRounding, calculateRawCourseHandicap, type RoundingMode } from '..
 import {
   exportCompetitionPdf,
   shareCompetitionSummary,
-  summarizeHandicapExportPlayers,
   type HandicapExportPayload,
 } from '../core/competitionHandicapExport';
+import { summarizeHandicapExportPlayers } from '../core/competitionHandicapUtils';
 import {
   clearCompetitionCheckerDraft,
   formatCompetitionCheckerDraftSavedAt,

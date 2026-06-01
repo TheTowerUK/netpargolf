@@ -4,20 +4,23 @@ import { StatusBar, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import RootNavigator from './src/navigations/RootNavigator';
 import { ToastProvider } from './src/components/Toast';
+import ErrorBoundary from './src/components/ErrorBoundary';
 import { colors } from './src/theme/colors';
 
 export default function App() {
   return (
-    <ToastProvider>
-    <SafeAreaProvider>
-      <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
-        <StatusBar barStyle="dark-content" />
-        <View style={styles.app}>
-          <RootNavigator />
-        </View>
-      </SafeAreaView>
-    </SafeAreaProvider>
-    </ToastProvider>
+    <ErrorBoundary>
+      <ToastProvider>
+        <SafeAreaProvider>
+          <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
+            <StatusBar barStyle="dark-content" />
+            <View style={styles.app}>
+              <RootNavigator />
+            </View>
+          </SafeAreaView>
+        </SafeAreaProvider>
+      </ToastProvider>
+    </ErrorBoundary>
   );
 }
 

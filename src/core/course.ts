@@ -15,6 +15,7 @@ export type CourseTee = {
   courseRating: number;
   slopeRating: number;
   gender?: string;
+  /** Per-tee scorecard when imported from JSON; overrides course.holes for handicap par. */
   holes?: CourseHole[];
 };
 
@@ -34,6 +35,41 @@ export type Course = {
   scorecardSource?: ScorecardSource;
   strokeIndexSource?: StrokeIndexSource;
 };
+
+/** Sum par from an 18-hole scorecard, or null if holes are incomplete. */
+export function sumHolePar(holes: CourseHole[] | null | undefined): number | null {
+  if (!Array.isArray(holes) || holes.length !== 18) return null;
+  let total = 0;
+  for (const h of holes) {
+    if (!Number.isFinite(h.par) || h.par < 1) return null;
+    total += h.par;
+  }
+  return total;
+}
+
+/**
+ * Par for WHS course-handicap: HI × (Slope/113) + (CR − Par).
+ * Prefer hole-by-hole total (tee layout or course scorecard) over tee metadata alone.
+ */
+export function resolveTeeHandicapPar(
+  tee: CourseTee | null | undefined,
+  courseHoles?: CourseHole[] | null
+): number | null {
+  if (!tee) return null;
+
+  const teeHoleSum = sumHolePar(tee.holes);
+  if (teeHoleSum != null) return teeHoleSum;
+
+  const courseHoleSum = sumHolePar(courseHoles ?? undefined);
+  if (courseHoleSum != null) {
+    if (!Number.isFinite(tee.par)) return courseHoleSum;
+    // Scorecard hole total is authoritative when tee par metadata is wrong (e.g. par_total 70 vs 71).
+    if (courseHoleSum !== tee.par) return courseHoleSum;
+    return courseHoleSum;
+  }
+
+  return Number.isFinite(tee.par) ? tee.par : null;
+}
 
 /** True if 18 holes, all par 4, SI sequential 1–18 (placeholder/default scorecard) */
 export function looksLikeDefaultScorecard(course: Course): boolean {

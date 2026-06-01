@@ -4,8 +4,7 @@
 
 import type { PersistedRound, PersistedPlayer } from '../storage/roundStorage';
 import type { Course } from '../core/course';
-import { scoreHoleOptionA, sumBestN } from '../core/scoring';
-import type { RoundingModeInput } from '../core/scoring';
+import { scoreHoleWithPlayingHandicap, sumBestN } from '../core/scoring';
 import { strokesBasisForAllocation } from '../core/scoring/strokesBasis';
 import { getStablefordPointsForPlayer } from '../core/scoring/individualStableford';
 import type { MatchSummary } from '../types/matchSummary';
@@ -167,8 +166,6 @@ export function computeScoreboardTotals(params: {
     round.scores.map((s) => [s.holeNumber, s])
   );
 
-  const rmRaw = round.roundingMode ?? 'round';
-  const rm: RoundingModeInput = rmRaw === 'floor' || rmRaw === 'ceil' ? rmRaw : 'nearest';
   const isBetterballStableford =
     round.competition === 'betterball_stableford' && round.players.length === 4;
   const isIndividualStableford = round.competition === 'individual_stableford';
@@ -206,10 +203,8 @@ export function computeScoreboardTotals(params: {
       }
       if (grossNum == null || !Number.isFinite(grossNum) || playingHcp == null) continue;
       try {
-        const b = scoreHoleOptionA({
-          courseHandicap: playingHcp,
-          allowancePercent: 1,
-          roundingMode: rm,
+        const b = scoreHoleWithPlayingHandicap({
+          playingHandicap: playingHcp,
           hole: { par: par as number, strokeIndex: si as number },
           gross: grossNum,
         });

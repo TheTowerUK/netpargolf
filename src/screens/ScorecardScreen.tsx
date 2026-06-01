@@ -35,9 +35,6 @@ import { loadCurrentRound, type PersistedRound } from '../storage/roundStorage';
 import { getRoundById } from '../storage/roundHistoryStorage';
 import { colors } from '../theme/colors';
 
-import * as Print from 'expo-print';
-import * as Sharing from 'expo-sharing';
-
 const HOLES = Array.from({ length: 18 }, (_, i) => i + 1);
 
 const TIP_KEY_PAR_SI = '@netpargolf/tip_par_si_edit:v1';
@@ -230,6 +227,9 @@ export default function ScorecardScreen({ route }: Props) {
       w.print();
       return;
     }
+
+    const Print = await import('expo-print');
+    const Sharing = await import('expo-sharing');
 
     const { uri } = await Print.printToFileAsync({ html });
     if (await Sharing.isAvailableAsync()) {

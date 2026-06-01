@@ -1,5 +1,3 @@
-import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system/legacy';
 import type { Course, CourseHole, CourseTee } from '../core/course';
 
 type ImportedHole = {
@@ -121,14 +119,17 @@ function normalizeTee(raw: ImportedTee): { tee: CourseTee; warnings: string[] } 
 
   const warnings: string[] = [];
   const sumPar = holes.reduce((sum, h) => sum + h.par, 0);
+  const resolvedPar = sumPar !== teePar ? sumPar : teePar;
   if (sumPar !== teePar) {
-    warnings.push(`${teeNameRaw}: tee par ${teePar} does not match hole par total ${sumPar}.`);
+    warnings.push(
+      `${teeNameRaw}: tee par ${teePar} does not match hole par total ${sumPar}; using ${resolvedPar} for handicap.`
+    );
   }
 
   return {
     tee: {
       name: teeNameRaw as CourseTee['name'],
-      par: teePar,
+      par: resolvedPar,
       courseRating,
       slopeRating: Math.round(slopeRating),
       ...(asString(raw.gender) ? { gender: asString(raw.gender) as string } : {}),
@@ -178,6 +179,9 @@ export function parseImportedCourseJson(rawText: string, sourceName: string): Im
 }
 
 export async function pickAndReadCourseJson(): Promise<ImportedCourseResult | null> {
+  const DocumentPicker = await import('expo-document-picker');
+  const FileSystem = await import('expo-file-system/legacy');
+
   const picked = await DocumentPicker.getDocumentAsync({
     type: 'application/json',
     copyToCacheDirectory: true,

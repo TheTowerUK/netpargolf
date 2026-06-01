@@ -1,15 +1,9 @@
 import type { Course } from '../course';
 import type { HoleScoreState, PersistedPlayer, PersistedRound } from '../../storage/roundStorage';
-import { scoreHoleOptionA, type RoundingMode } from '../scoring';
+import { scoreHoleWithPlayingHandicap } from '../scoring';
 import { strokesBasisForAllocation } from './strokesBasis';
 import { getHoleParAndStrokeIndex } from '../../utils/holeMetaFromRound';
 import { getHoleScoreState, isPlayerExcludedByNonReturn } from './stablefordState';
-
-function roundingModeForScore(round: PersistedRound): RoundingMode {
-  const rmRaw = round.roundingMode ?? 'round';
-  if (rmRaw === 'floor' || rmRaw === 'ceil') return rmRaw;
-  return 'nearest';
-}
 
 export type StablefordHoleBreakdown = {
   points: number;
@@ -57,11 +51,8 @@ export function getStablefordHoleBreakdownForPlayer(
   if (basis == null || !Number.isFinite(basis)) return null;
 
   try {
-    const rm = roundingModeForScore(round);
-    const breakdown = scoreHoleOptionA({
-      courseHandicap: basis,
-      allowancePercent: 1,
-      roundingMode: rm,
+    const breakdown = scoreHoleWithPlayingHandicap({
+      playingHandicap: basis,
       hole: { par, strokeIndex },
       gross,
     });

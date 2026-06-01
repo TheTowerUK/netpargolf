@@ -82,27 +82,21 @@ export function calculateAdjustedHandicap(
 }
 
 /**
- * Allocate strokes on a hole based on adjusted handicap and stroke index (1..18).
+ * Allocate strokes on a hole from final playing handicap and stroke index (1..18).
  *
- * Rule:
- * - If adjustedHandicap >= SI => 1 stroke
- * - If adjustedHandicap >= SI + 18 => 2 strokes
- * - If adjustedHandicap >= SI + 36 => 3 strokes, etc.
- *
- * Works for any non-negative adjusted handicap.
+ * fullRounds = floor(PH / 18)
+ * remainder = PH % 18
+ * strokes = fullRounds + (SI <= remainder ? 1 : 0)
  */
-export function calculateStrokesOnHole(adjustedHandicap: number, strokeIndex: number): number {
-  if (!Number.isFinite(adjustedHandicap)) throw new Error('adjustedHandicap must be finite');
+export function calculateStrokesOnHole(playingHandicap: number, strokeIndex: number): number {
+  if (!Number.isFinite(playingHandicap)) throw new Error('playingHandicap must be finite');
   if (!Number.isFinite(strokeIndex) || strokeIndex < 1 || strokeIndex > 18) {
     throw new Error('strokeIndex must be between 1 and 18');
   }
-  const h = Math.max(0, Math.floor(adjustedHandicap));
-
-  // Fast formula:
-  // If h < SI => 0
-  // Else strokes = 1 + floor((h - SI) / 18)
-  if (h < strokeIndex) return 0;
-  return 1 + Math.floor((h - strokeIndex) / 18);
+  const ph = Math.max(0, Math.floor(playingHandicap));
+  const fullRounds = Math.floor(ph / 18);
+  const remainder = ph % 18;
+  return fullRounds + (strokeIndex <= remainder ? 1 : 0);
 }
 
 /**
@@ -131,6 +125,35 @@ export function calculateNetScore(gross: number, strokesReceivedOnHole: number):
     throw new Error('strokesReceivedOnHole must be a finite number >= 0');
   }
   return gross - strokesReceivedOnHole;
+}
+
+/** Stableford / live scoring: use final playing handicap only (no allowance re-application). */
+export function scoreHoleWithPlayingHandicap(args: {
+  playingHandicap: number;
+  hole: Pick<Hole, 'par' | 'strokeIndex'>;
+  gross: number;
+}): Pick<
+  ScoringBreakdown,
+  'strokesReceivedOnHole' | 'net' | 'points' | 'par' | 'gross' | 'strokeIndex'
+> {
+  const { playingHandicap, hole, gross } = args;
+  if (!hole) throw new Error('hole is required');
+  if (!Number.isFinite(hole.par) || hole.par < 1) throw new Error('hole.par must be a positive number');
+  if (!Number.isFinite(gross) || gross < 0) throw new Error('gross must be >= 0');
+
+  const ph = Math.max(0, Math.floor(playingHandicap));
+  const strokesReceivedOnHole = calculateStrokesOnHole(ph, hole.strokeIndex);
+  const net = calculateNetScore(gross, strokesReceivedOnHole);
+  const points = calculateTrainingPoints(net, hole.par);
+
+  return {
+    strokesReceivedOnHole,
+    net,
+    points,
+    par: hole.par,
+    gross,
+    strokeIndex: hole.strokeIndex,
+  };
 }
 
 /**

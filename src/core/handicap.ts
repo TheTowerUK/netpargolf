@@ -18,6 +18,8 @@ export function applyRounding(value: number, mode: RoundingMode): number {
 /**
  * WHS Course Handicap (unrounded):
  * HI × (Slope / 113) + (Course Rating − Par)
+ *
+ * Course Rating is used at full decimal precision — never rounded here.
  */
 export function calculateRawCourseHandicap(params: {
   handicapIndex: number;

@@ -1,5 +1,5 @@
 // src/services/golfCourseApi.ts
-import { Course, CourseHole, CourseTee, TeeColor, isValidCourse, makeDefaultCourse } from '../core/course';
+import { Course, CourseHole, CourseTee, TeeColor, isValidCourse, makeDefaultCourse, sumHolePar } from '../core/course';
 import { loadCourseDetailsCache, saveCourseDetailsCache } from '../storage/courseDetailsCache';
 import type {
   GolfCourseApiCourse,
@@ -141,11 +141,17 @@ function extractCourseTees(raw: any): CourseTee[] {
 
     const slopeRating = Number(tee?.slope_rating ?? tee?.slopeRating);
     const courseRating = Number(tee?.course_rating ?? tee?.courseRating);
-    const par =
-      Number(tee?.par_total) ||
-      (Array.isArray(tee?.holes)
+    const parFromHoles =
+      Array.isArray(tee?.holes) && tee.holes.length >= 9
         ? tee.holes.reduce((sum: number, hole: any) => sum + Number(hole?.par ?? 0), 0)
-        : 0);
+        : 0;
+    const parTotal = Number(tee?.par_total ?? tee?.par ?? 0);
+    const par =
+      parFromHoles > 0
+        ? parFromHoles
+        : Number.isFinite(parTotal) && parTotal > 0
+          ? parTotal
+          : 0;
 
     if (!Number.isFinite(slopeRating) || !Number.isFinite(courseRating) || !Number.isFinite(par)) {
       continue;
@@ -289,7 +295,32 @@ export function mapApiCourseToCourse(courseDetails: GolfCourseApiCourse | any): 
   const name = String(courseRaw?.course_name ?? courseRaw?.club_name ?? 'Course');
 
   const { holes, note, scorecardSource, strokeIndexSource } = extractHoles(courseDetails);
-  const tees = extractCourseTees(courseDetails);
+  let tees = extractCourseTees(courseDetails);
+
+  const scorecardPar = sumHolePar(holes);
+  if (scorecardPar != null && tees.length > 0) {
+    const teeBoxes = getTeeBoxes(courseRaw);
+    const withHoles = teeBoxes.filter((t) => Array.isArray(t?.holes) && t.holes.length >= 9);
+    const chosenTee = pickTeeSet(withHoles.length ? withHoles : teeBoxes);
+    const scorecardTeeName = chosenTee
+      ? normaliseTeeColor(String(chosenTee?.tee_name ?? chosenTee?.teeName ?? ''))
+      : null;
+
+    tees = tees.map((tee) => {
+      const teeHoleSum = sumHolePar(
+        Array.isArray((tee as { holes?: CourseHole[] }).holes)
+          ? ((tee as { holes?: CourseHole[] }).holes as CourseHole[])
+          : undefined
+      );
+      if (teeHoleSum != null) {
+        return teeHoleSum !== tee.par ? { ...tee, par: teeHoleSum } : tee;
+      }
+      if (scorecardTeeName && tee.name === scorecardTeeName && scorecardPar !== tee.par) {
+        return { ...tee, par: scorecardPar };
+      }
+      return tee;
+    });
+  }
 
   const defaultNote = 'Hole-by-hole data not available — using default scorecard.';
   const usedDefaultHoles = note === defaultNote;

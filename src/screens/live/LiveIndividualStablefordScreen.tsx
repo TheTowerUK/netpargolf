@@ -247,6 +247,103 @@ export default function LiveIndividualStablefordScreen({ navigation }: Props) {
     );
   }
 
+  function renderIndividualPlayerRow(player: (typeof round.players)[number]) {
+    const value = currentHoleData.grossByPlayerId?.[player.id];
+    const gross = typeof value === 'number' ? value : null;
+    const state =
+      currentHoleData.scoreStateByPlayerId?.[player.id] ?? (gross != null ? 'entered' : 'pending');
+    const isNR = isPlayerExcludedByNonReturn(round, player.id, round.currentHole);
+    const breakdown = getStablefordHoleBreakdownForPlayer(
+      round,
+      player,
+      round.currentHole,
+      course,
+      gross,
+      state
+    );
+    const pts = getStablefordPointsForPlayer(round, player, round.currentHole, course, gross, state);
+    const pointsStyle = [
+      styles.pointsBox,
+      pts == null
+        ? styles.pointsBoxEmpty
+        : pts >= 3
+          ? styles.pointsBoxGood
+          : pts >= 1
+            ? styles.pointsBoxActive
+            : styles.pointsBoxLow,
+    ];
+    const displayName = (player.name ?? '').trim() || 'Player';
+    const running = runningTotals[player.id] ?? 0;
+    const playerNr = getPlayerStatus(round, player.id) === 'non_return';
+
+    return (
+      <View key={player.id} style={styles.stackedPlayerBlock}>
+        <View style={styles.stackedPlayerHeader}>
+          <Text style={styles.stackedPlayerName} numberOfLines={1} ellipsizeMode="tail">
+            {displayName}
+          </Text>
+          <Text style={styles.stackedHeaderSep}>•</Text>
+          <Text style={styles.stackedPtsMuted}>Pts: {running}</Text>
+        </View>
+        <Text style={styles.stackedMetaLine}>
+          HI {player.handicapIndex ?? '—'} · CH {player.courseHandicap ?? '—'} · PH{' '}
+          {player.playingHandicap ?? '—'}
+        </Text>
+        {playerNr ? (
+          <Text style={styles.stackedNrLine}>
+            NR from hole {getNonReturnFromHole(round, player.id) ?? round.currentHole}
+          </Text>
+        ) : null}
+        <View style={styles.scoreBoxesRowStacked}>
+          <View style={styles.scoreBoxGroupStacked}>
+            <Text style={styles.scoreBoxLabel}>Gross</Text>
+            <TextInput
+              value={state === 'pickup' ? 'PU' : isNR ? 'NR' : formatGrossEntry(gross)}
+              onChangeText={(v) => void updateScore(player.id, v)}
+              style={styles.scoreInput}
+              keyboardType="number-pad"
+              inputMode="numeric"
+              editable={!isNR && state !== 'pickup'}
+              placeholder={isNR ? 'NR' : '—'}
+              placeholderTextColor="#9ca3af"
+            />
+          </View>
+          <View style={styles.scoreBoxGroupStacked}>
+            <Text style={styles.scoreBoxLabelMuted}>Net</Text>
+            <View style={styles.miniBox}>
+              <Text style={styles.miniBoxText}>{breakdown ? breakdown.net : '—'}</Text>
+            </View>
+          </View>
+          <View style={styles.scoreBoxGroupStacked}>
+            <Text style={styles.scoreBoxLabelMuted}>Pts</Text>
+            <View style={pointsStyle}>
+              <Text style={styles.pointsBoxText}>{isNR ? 'NR' : pts == null ? '—' : pts}</Text>
+            </View>
+          </View>
+          <View style={styles.scoreBoxGroupStacked}>
+            <Text style={styles.scoreBoxLabelMuted}>State</Text>
+            <Pressable
+              style={[styles.miniBox, isNR && { opacity: 0.45 }]}
+              onPress={() => void markPickup(player.id)}
+              disabled={isNR}
+            >
+              <Text style={styles.miniBoxText}>PU</Text>
+            </Pressable>
+          </View>
+          <View style={styles.scoreBoxGroupStacked}>
+            <Text style={styles.scoreBoxLabelMuted}>Round</Text>
+            <Pressable
+              style={[styles.miniBox, playerNr && { borderColor: '#f87171' }]}
+              onPress={() => void markNonReturn(player.id)}
+            >
+              <Text style={styles.miniBoxText}>NR</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.flex}
@@ -299,97 +396,7 @@ export default function LiveIndividualStablefordScreen({ navigation }: Props) {
 
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Scores this hole</Text>
-          {round.players.map((player) => {
-            const value = currentHoleData.grossByPlayerId?.[player.id];
-            const gross = typeof value === 'number' ? value : null;
-            const state = currentHoleData.scoreStateByPlayerId?.[player.id] ?? (gross != null ? 'entered' : 'pending');
-            const isNR = isPlayerExcludedByNonReturn(round, player.id, round.currentHole);
-            const breakdown = getStablefordHoleBreakdownForPlayer(
-              round,
-              player,
-              round.currentHole,
-              course,
-              gross,
-              state
-            );
-            const pts = getStablefordPointsForPlayer(round, player, round.currentHole, course, gross, state);
-            const pointsStyle = [
-              styles.pointsBox,
-              pts == null
-                ? styles.pointsBoxEmpty
-                : pts >= 3
-                  ? styles.pointsBoxGood
-                  : pts >= 1
-                    ? styles.pointsBoxActive
-                    : styles.pointsBoxLow,
-            ];
-            const displayName = (player.name ?? '').trim() || 'Player';
-            const running = runningTotals[player.id] ?? 0;
-
-            return (
-              <View key={player.id} style={styles.playerScoreRow}>
-                <View style={styles.playerMeta}>
-                  <Text style={styles.playerName}>{displayName}</Text>
-                  <Text style={styles.playerSub}>
-                    HI {player.handicapIndex ?? '—'} · CH {player.courseHandicap ?? '—'} · PH{' '}
-                    {player.playingHandicap ?? '—'}
-                  </Text>
-                  {getPlayerStatus(round, player.id) === 'non_return' ? (
-                    <Text style={[styles.playerSub, { color: '#fca5a5', fontWeight: '700' }]}>
-                      NR from hole {getNonReturnFromHole(round, player.id) ?? round.currentHole}
-                    </Text>
-                  ) : null}
-                  <Text style={styles.runningPts}>Round total: {running} pts</Text>
-                </View>
-                <View style={styles.scoreBoxesWrap}>
-                  <View style={styles.scoreBoxGroup}>
-                    <Text style={styles.scoreBoxLabel}>Gross</Text>
-                    <TextInput
-                      value={state === 'pickup' ? 'PU' : isNR ? 'NR' : formatGrossEntry(gross)}
-                      onChangeText={(v) => void updateScore(player.id, v)}
-                      style={styles.scoreInput}
-                      keyboardType="number-pad"
-                      inputMode="numeric"
-                      editable={!isNR && state !== 'pickup'}
-                      placeholder={isNR ? 'NR' : '—'}
-                      placeholderTextColor="#9ca3af"
-                    />
-                  </View>
-                  <View style={styles.scoreBoxGroup}>
-                    <Text style={styles.scoreBoxLabelMuted}>Net</Text>
-                    <View style={styles.miniBox}>
-                      <Text style={styles.miniBoxText}>{breakdown ? breakdown.net : '—'}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.scoreBoxGroup}>
-                    <Text style={styles.scoreBoxLabelMuted}>Pts</Text>
-                    <View style={pointsStyle}>
-                      <Text style={styles.pointsBoxText}>{isNR ? 'NR' : pts == null ? '—' : pts}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.scoreBoxGroup}>
-                    <Text style={styles.scoreBoxLabelMuted}>State</Text>
-                    <Pressable
-                      style={[styles.miniBox, isNR && { opacity: 0.45 }]}
-                      onPress={() => void markPickup(player.id)}
-                      disabled={isNR}
-                    >
-                      <Text style={styles.miniBoxText}>PU</Text>
-                    </Pressable>
-                  </View>
-                  <View style={styles.scoreBoxGroup}>
-                    <Text style={styles.scoreBoxLabelMuted}>Round</Text>
-                    <Pressable
-                      style={[styles.miniBox, getPlayerStatus(round, player.id) === 'non_return' && { borderColor: '#f87171' }]}
-                      onPress={() => void markNonReturn(player.id)}
-                    >
-                      <Text style={styles.miniBoxText}>NR</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              </View>
-            );
-          })}
+          {round.players.map((player) => renderIndividualPlayerRow(player))}
         </View>
 
         <View style={styles.card}>

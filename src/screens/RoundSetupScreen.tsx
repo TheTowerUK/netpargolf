@@ -25,6 +25,7 @@ import { COMPETITION_OPTIONS, type RoundCompetition } from '../types/competition
 import { getCompetitionLabel, getCompetitionShortLabel } from '../utils/competitionLabels';
 import { navigateToLiveForCompetition } from '../utils/competitionNavigation';
 import type { Course, CourseTee } from '../core/course';
+import { resolveTeeHandicapPar } from '../core/course';
 import { loadActiveCourse } from '../storage/courseStorage';
 import { hasMissingStrokeIndex } from '../utils/courseValidation';
 import StrokeIndexWarningBanner from '../components/StrokeIndexWarningBanner';
@@ -179,6 +180,11 @@ export default function RoundSetupScreen({ navigation, route }: Props) {
     return course.tees[index] ?? null;
   }, [course, selectedTeeIndex]);
 
+  const selectedTeeHandicapPar = useMemo(
+    () => resolveTeeHandicapPar(selectedTee, course?.holes),
+    [selectedTee, course?.holes]
+  );
+
   function recalcPlayerHandicaps(nextPlayers: PersistedPlayer[]): PersistedPlayer[] {
     return calculateCompetitionHandicaps({
       players: nextPlayers,
@@ -187,7 +193,7 @@ export default function RoundSetupScreen({ navigation, route }: Props) {
       roundingMode,
       slopeRating: selectedTee?.slopeRating ?? null,
       courseRating: selectedTee?.courseRating ?? null,
-      par: selectedTee?.par ?? null,
+      par: selectedTeeHandicapPar,
     });
   }
 
@@ -228,14 +234,14 @@ export default function RoundSetupScreen({ navigation, route }: Props) {
         };
       })
       .filter((x): x is NonNullable<typeof x> => x != null);
-  }, [players, allowancePercent, competition, selectedTee, roundingMode]);
+  }, [players, allowancePercent, competition, selectedTee, selectedTeeHandicapPar, roundingMode]);
 
   const roundingPreview = useMemo(() => {
     if (competition === 'fourball_betterball_matchplay') return null;
 
     const hi = players[0]?.handicapIndex ?? null;
     const pct = parseFloat(allowancePercent);
-    const teePar = selectedTee?.par ?? null;
+    const teePar = selectedTeeHandicapPar;
     const teeCourseRating = selectedTee?.courseRating ?? null;
     const teeSlopeRating = selectedTee?.slopeRating ?? null;
 
@@ -270,7 +276,7 @@ export default function RoundSetupScreen({ navigation, route }: Props) {
       round: applyRounding(rawPlaying, 'round'),
       ceil: applyRounding(rawPlaying, 'ceil'),
     };
-  }, [players, allowancePercent, selectedTee, competition, roundingMode]);
+  }, [players, allowancePercent, selectedTee, selectedTeeHandicapPar, competition, roundingMode]);
 
   /** Mirror RoundScoringScreen getHoleMeta: same hole order (1–18) and SI source. */
   const shotsPreviewData = useMemo(() => {
@@ -658,7 +664,10 @@ export default function RoundSetupScreen({ navigation, route }: Props) {
               </View>
               {selectedTee ? (
                 <Text style={styles.roundingHelper}>
-                  Par {selectedTee.par} | CR {selectedTee.courseRating} | Slope {selectedTee.slopeRating}
+                  Par {selectedTeeHandicapPar ?? selectedTee.par} | CR {selectedTee.courseRating} | Slope {selectedTee.slopeRating}
+                  {selectedTeeHandicapPar != null && selectedTeeHandicapPar !== selectedTee.par
+                    ? ` (scorecard; tee metadata ${selectedTee.par})`
+                    : ''}
                 </Text>
               ) : null}
             </>

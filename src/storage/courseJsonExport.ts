@@ -1,5 +1,3 @@
-import * as FileSystem from 'expo-file-system/legacy';
-import * as Sharing from 'expo-sharing';
 import type { Course, CourseHole } from '../core/course';
 
 type ExportTee = {
@@ -71,6 +69,9 @@ function makeSafeFilename(name: string): string {
 }
 
 export async function exportCourseToJsonFile(course: Course): Promise<void> {
+  const FileSystem = await import('expo-file-system/legacy');
+  const Sharing = await import('expo-sharing');
+
   const payload = buildCourseExportPayload(course);
   const filename = `netpargolf-course-${makeSafeFilename(course.name)}.json`;
   const dir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;

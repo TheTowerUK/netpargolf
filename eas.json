@@ -17,6 +17,12 @@
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "ascAppId": "6759217492",
+        "appleId": "TheToweruk@gmail.com",
+        "appleTeamId": "UV8WX5DTDN"
+      }
+    }
   }
 }

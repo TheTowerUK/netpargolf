@@ -1,80 +1,24 @@
 import { Share } from 'react-native';
-import * as Print from 'expo-print';
-import * as Sharing from 'expo-sharing';
-import * as FileSystem from 'expo-file-system/legacy';
+import {
+  filterExportableHandicapPlayers,
+  summarizeHandicapExportPlayers,
+  type HandicapExportPayload,
+  type HandicapExportPlayer,
+  type HandicapExportTeam,
+} from './competitionHandicapUtils';
 
-export type HandicapExportPlayer = {
-  name: string;
-  handicapIndex: number | null;
-  courseHandicap: number | null;
-  playingHandicap: number | null;
-};
+export type {
+  HandicapExportPayload,
+  HandicapExportPlayer,
+  HandicapExportTeam,
+} from './competitionHandicapUtils';
 
-export type HandicapExportTeam = {
-  title: string;
-  players: HandicapExportPlayer[];
-  enteredCount: number;
-  averageHandicapIndex: number | null;
-  averagePlayingHandicap: number | null;
-};
-
-export type HandicapExportPayload = {
-  title: string;
-  generatedAt: string;
-  courseName: string;
-  teeName: string | null;
-  courseRating: number | null;
-  slopeRating: number | null;
-  par: number | null;
-  allowancePercent: number;
-  roundingMode: 'round' | 'floor' | 'ceil';
-  teamA: HandicapExportTeam;
-  teamB: HandicapExportTeam;
-};
-
-const PLACEHOLDER_PLAYER_NAME = /^player\s*\d*$/i;
-
-export function isRealHandicapPlayerName(name: string): boolean {
-  const trimmed = name.trim();
-  if (!trimmed) return false;
-  return !PLACEHOLDER_PLAYER_NAME.test(trimmed);
-}
-
-export function isExportableHandicapPlayer(player: HandicapExportPlayer): boolean {
-  if (isRealHandicapPlayerName(player.name)) return true;
-  const hi = player.handicapIndex;
-  if (hi == null || hi === 0) return false;
-  return false;
-}
-
-export function filterExportableHandicapPlayers(
-  players: HandicapExportPlayer[]
-): HandicapExportPlayer[] {
-  return players.filter(isExportableHandicapPlayer);
-}
-
-function average(values: number[]): number | null {
-  if (!values.length) return null;
-  const total = values.reduce((sum, v) => sum + v, 0);
-  return Number((total / values.length).toFixed(1));
-}
-
-export function summarizeHandicapExportPlayers(players: HandicapExportPlayer[]): {
-  enteredCount: number;
-  averageHandicapIndex: number | null;
-  averagePlayingHandicap: number | null;
-} {
-  const entered = filterExportableHandicapPlayers(players);
-  return {
-    enteredCount: entered.length,
-    averageHandicapIndex: average(
-      entered.map((p) => p.handicapIndex).filter((v): v is number => v != null)
-    ),
-    averagePlayingHandicap: average(
-      entered.map((p) => p.playingHandicap).filter((v): v is number => v != null)
-    ),
-  };
-}
+export {
+  filterExportableHandicapPlayers,
+  isExportableHandicapPlayer,
+  isRealHandicapPlayerName,
+  summarizeHandicapExportPlayers,
+} from './competitionHandicapUtils';
 
 function formatMaybe(value: number | null): string {
   return value == null ? '-' : String(value);
@@ -310,6 +254,10 @@ function buildHandicapPdfFilename(payload: HandicapExportPayload): string {
 }
 
 export async function exportCompetitionPdf(payload: HandicapExportPayload): Promise<string> {
+  const Print = await import('expo-print');
+  const FileSystem = await import('expo-file-system/legacy');
+  const Sharing = await import('expo-sharing');
+
   const html = buildCompetitionSummaryHtml(payload);
   const { uri } = await Print.printToFileAsync({ html });
   const dir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
@@ -325,6 +273,7 @@ export async function exportCompetitionPdf(payload: HandicapExportPayload): Prom
 }
 
 export async function saveCompetitionSummaryTextFile(payload: HandicapExportPayload): Promise<string> {
+  const FileSystem = await import('expo-file-system/legacy');
   const dir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
   if (!dir) throw new Error('Storage not available');
   const filename = `netpargolf-handicap-summary-${Date.now()}.txt`;

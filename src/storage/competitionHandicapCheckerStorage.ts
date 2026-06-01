@@ -122,8 +122,12 @@ export async function loadCompetitionCheckerDraft(): Promise<CompetitionCheckerD
   const legacy = await readDraftFromKey(LEGACY_CHECKER_DRAFT_KEY);
   if (!legacy) return null;
 
-  await saveCompetitionCheckerDraft(legacy);
-  await AsyncStorage.removeItem(LEGACY_CHECKER_DRAFT_KEY);
+  try {
+    await saveCompetitionCheckerDraft(legacy);
+    await AsyncStorage.removeItem(LEGACY_CHECKER_DRAFT_KEY);
+  } catch {
+    // Keep legacy key if migration write fails.
+  }
   return legacy;
 }
 
@@ -143,8 +147,8 @@ export async function saveCompetitionCheckerDraft(
     roundingMode: normaliseRoundingMode(draft.roundingMode),
     teamAName: typeof draft.teamAName === 'string' ? draft.teamAName : '',
     teamBName: typeof draft.teamBName === 'string' ? draft.teamBName : '',
-    teamA: draft.teamA.length === 12 ? draft.teamA : defaultTeam('A'),
-    teamB: draft.teamB.length === 12 ? draft.teamB : defaultTeam('B'),
+    teamA: Array.isArray(draft.teamA) && draft.teamA.length === 12 ? draft.teamA : defaultTeam('A'),
+    teamB: Array.isArray(draft.teamB) && draft.teamB.length === 12 ? draft.teamB : defaultTeam('B'),
     updatedAt: draft.updatedAt ?? new Date().toISOString(),
   };
   await AsyncStorage.setItem(CHECKER_DRAFT_KEY, JSON.stringify(payload));

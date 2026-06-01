@@ -2,8 +2,7 @@
 // Shared by live scoring and totals — keep in sync with handicap setup.
 
 import type { PersistedPlayer, PersistedRound } from '../../storage/roundStorage';
-import { computePlayingHandicap } from '../scoring';
-import type { RoundingModeInput } from '../scoring';
+import { applyRounding } from '../handicap';
 
 export function strokesBasisForAllocation(
   player: PersistedPlayer,
@@ -15,15 +14,13 @@ export function strokesBasisForAllocation(
   if (player.matchStrokes != null && Number.isFinite(player.matchStrokes)) {
     return player.matchStrokes;
   }
-  if (player.courseHandicap != null && Number.isFinite(player.courseHandicap)) {
-    const rmRaw = round.roundingMode ?? 'round';
-    const rm: RoundingModeInput =
-      rmRaw === 'floor' || rmRaw === 'ceil' ? rmRaw : 'nearest';
-    return computePlayingHandicap(
-      player.courseHandicap,
-      round.allowancePercent ?? 100,
-      rm
-    );
+  const rm = round.roundingMode ?? 'round';
+  if (player.rawPlayingHandicap != null && Number.isFinite(player.rawPlayingHandicap)) {
+    return applyRounding(player.rawPlayingHandicap, rm);
+  }
+  if (player.rawCourseHandicap != null && Number.isFinite(player.rawCourseHandicap)) {
+    const pct = round.allowancePercent ?? 100;
+    return applyRounding(player.rawCourseHandicap * (pct / 100), rm);
   }
   return null;
 }
