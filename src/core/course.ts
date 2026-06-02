@@ -10,7 +10,7 @@ export type CourseHole = {
 export type TeeColor = 'White' | 'Yellow' | 'Red' | 'Blue' | 'Winter';
 
 export type CourseTee = {
-  name: TeeColor;
+  name: string;
   par: number;
   courseRating: number;
   slopeRating: number;
@@ -35,6 +35,32 @@ export type Course = {
   scorecardSource?: ScorecardSource;
   strokeIndexSource?: StrokeIndexSource;
 };
+
+function normalizeTeeName(value: string | null | undefined, fallbackIndex: number): string {
+  const trimmed = String(value ?? '').trim();
+  if (trimmed.length > 0) return trimmed;
+  return `Tee ${fallbackIndex + 1}`;
+}
+
+/** Ensure tee names are non-empty and unique within a course. */
+export function ensureUniqueTeeNames(tees: CourseTee[] | null | undefined): CourseTee[] {
+  if (!Array.isArray(tees)) return [];
+  const seen = new Map<string, number>();
+
+  return tees.map((tee, index) => {
+    const base = normalizeTeeName(tee?.name, index);
+    const key = base.toLocaleLowerCase();
+    const count = (seen.get(key) ?? 0) + 1;
+    seen.set(key, count);
+    const name = count === 1 ? base : `${base} (${count})`;
+    return { ...tee, name };
+  });
+}
+
+export function courseWithUniqueTeeNames(course: Course): Course {
+  const tees = ensureUniqueTeeNames(course.tees);
+  return { ...course, tees };
+}
 
 /** Sum par from an 18-hole scorecard, or null if holes are incomplete. */
 export function sumHolePar(holes: CourseHole[] | null | undefined): number | null {

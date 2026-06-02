@@ -476,6 +476,7 @@ export default function ScoreboardScreen({ navigation, route }: Props) {
       formatLabel: formatCompetitionLabel(mappedRound.competition),
       playersLabel: String(mappedRound.players.length),
       dateLabel,
+      teeLabel: activeRound?.teeName?.trim() || undefined,
     };
   }, [mappedRound, course, historyEntry, activeRound, viewingHistory]);
 

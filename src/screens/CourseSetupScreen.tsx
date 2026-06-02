@@ -20,7 +20,14 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import type { RootStackParamList } from '../navigations/types';
 import { colors } from '../theme/colors';
-import { makeDefaultCourse, isValidCourse, type Course, type CourseTee } from '../core/course';
+import {
+  makeDefaultCourse,
+  isValidCourse,
+  courseWithUniqueTeeNames,
+  ensureUniqueTeeNames,
+  type Course,
+  type CourseTee,
+} from '../core/course';
 import { hasMissingStrokeIndex } from '../utils/courseValidation';
 import StrokeIndexWarningBanner from '../components/StrokeIndexWarningBanner';
 import {
@@ -48,6 +55,7 @@ import { loadCurrentRound, hasInProgressRound } from '../storage/roundStorage';
 import { hapticTap, hapticSuccess, hapticError } from '../utils/feedback';
 import { useToast, type ToastShowOptions } from '../components/Toast';
 import PrimaryButton from '../components/PrimaryButton';
+import { ENABLE_COURSE_JSON_SHARING } from '../config/releaseFeatures';
 
 const DEFAULT_TEES: CourseTee[] = [
   { name: 'White', par: 72, courseRating: 72, slopeRating: 113 },
@@ -125,8 +133,10 @@ export default function CourseSetupScreen() {
   >(() => buildCourseRatingDrafts(DEFAULT_TEES));
 
   function withDefaultTees(next: Course): Course {
-    if (Array.isArray(next.tees) && next.tees.length > 0) return next;
-    return { ...next, tees: DEFAULT_TEES };
+    if (Array.isArray(next.tees) && next.tees.length > 0) {
+      return { ...next, tees: ensureUniqueTeeNames(next.tees) };
+    }
+    return { ...next, tees: ensureUniqueTeeNames(DEFAULT_TEES) };
   }
 
   function applyCourse(next: Course) {
@@ -136,15 +146,26 @@ export default function CourseSetupScreen() {
   }
 
   function resolveCourseForSave(base: Course): Course {
-    const tees = teesWithResolvedCourseRatings(base.tees ?? DEFAULT_TEES, courseRatingDraftByTeeIndex);
-    const resolved = withDefaultTees({ ...base, tees });
+    const tees = teesWithResolvedCourseRatings(
+      ensureUniqueTeeNames(base.tees ?? DEFAULT_TEES),
+      courseRatingDraftByTeeIndex
+    );
+    const resolved = courseWithUniqueTeeNames(withDefaultTees({ ...base, tees }));
     setCourseRatingDraftByTeeIndex(buildCourseRatingDrafts(tees));
     return resolved;
   }
 
   function validateTees(tees: CourseTee[]): string | null {
     if (!tees.length) return 'Add at least one tee.';
+    const seenNames = new Set<string>();
     for (const tee of tees) {
+      const teeName = String(tee.name ?? '').trim();
+      if (!teeName) return 'Each tee must have a name.';
+      const nameKey = teeName.toLocaleLowerCase();
+      if (seenNames.has(nameKey)) {
+        return `Duplicate tee name: ${teeName}. Tee names must be unique.`;
+      }
+      seenNames.add(nameKey);
       if (!Number.isFinite(tee.par) || tee.par < 54 || tee.par > 90) {
         return `${tee.name}: invalid par`;
       }
@@ -461,6 +482,7 @@ export default function CourseSetupScreen() {
   };
 
   const onExportCourseJson = async () => {
+    if (!ENABLE_COURSE_JSON_SHARING) return;
     hapticTap();
     try {
       await exportCourseToJsonFile(resolveCourseForSave(course));
@@ -484,7 +506,7 @@ export default function CourseSetupScreen() {
         mode === 'new'
           ? { ...nextCourse, id: `course-${Date.now()}` }
           : nextCourse;
-      await upsertCourse(withDefaultTees(targetCourse));
+      await upsertCourse(courseWithUniqueTeeNames(withDefaultTees(targetCourse)));
       await setActiveCourseId(targetCourse.id);
       await refreshData();
       hapticSuccess();
@@ -536,6 +558,7 @@ export default function CourseSetupScreen() {
   };
 
   const onImportCourseJson = async () => {
+    if (!ENABLE_COURSE_JSON_SHARING) return;
     hapticTap();
     try {
       const imported = await pickAndReadCourseJson();
@@ -583,14 +606,16 @@ export default function CourseSetupScreen() {
     >
       <ScrollView contentContainerStyle={styles.container}>
         <Text style={styles.title}>Course Setup</Text>
-        <Text style={styles.subTitle}>Find, review, edit or share a course before starting a round.</Text>
+        <Text style={styles.subTitle}>
+          Find, review, edit and manage a course before starting a round.
+        </Text>
 
         {hasMissingStrokeIndex(course) && <StrokeIndexWarningBanner />}
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Find or Select Course</Text>
           <Text style={styles.muted}>
-            Search online, import a shared course file, or select one of your saved courses.
+            Search online or select one of your saved courses.
           </Text>
           <Text style={styles.hint}>
             {savedCourses.length > 0
@@ -606,12 +631,19 @@ export default function CourseSetupScreen() {
               style={styles.findCourseBtn}
               textStyle={{ color: colors.primary }}
             />
-            <PrimaryButton
-              title="Import Course"
-              onPress={onImportCourseJson}
-              variant="secondary"
-            />
+            {ENABLE_COURSE_JSON_SHARING ? (
+              <PrimaryButton
+                title="Import Course"
+                onPress={onImportCourseJson}
+                variant="secondary"
+              />
+            ) : null}
           </View>
+          {!ENABLE_COURSE_JSON_SHARING ? (
+            <Text style={styles.futureNote}>
+              Course sharing will be available in a future update.
+            </Text>
+          ) : null}
         </View>
 
         <View style={styles.card}>
@@ -896,12 +928,14 @@ export default function CourseSetupScreen() {
               disabled={!courseValid}
               variant="secondary"
             />
-            <PrimaryButton
-              title="Export Course"
-              onPress={onExportCourseJson}
-              disabled={!courseValid}
-              variant="secondary"
-            />
+            {ENABLE_COURSE_JSON_SHARING ? (
+              <PrimaryButton
+                title="Export Course"
+                onPress={onExportCourseJson}
+                disabled={!courseValid}
+                variant="secondary"
+              />
+            ) : null}
             <PrimaryButton
               title="Reset Defaults"
               onPress={() => { onReset(); toast.show('Updated', 'success', 900); }}
@@ -1097,6 +1131,13 @@ const styles = StyleSheet.create({
   teeFieldLabel: { fontSize: 11, color: colors.textSecondary, fontWeight: '700', marginBottom: 4 },
 
   hint: { marginTop: 8, fontSize: 12, color: colors.textSecondary },
+  futureNote: {
+    marginTop: 10,
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.textSecondary,
+    fontStyle: 'italic',
+  },
   warning: { marginTop: 8, fontSize: 12, color: colors.warning, fontWeight: '900' },
   findCourseBtn: {
     marginTop: 12,

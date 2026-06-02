@@ -1,4 +1,4 @@
-import type { Course, CourseHole, CourseTee } from '../core/course';
+import { courseWithUniqueTeeNames, type Course, type CourseHole, type CourseTee } from '../core/course';
 import {
   loadExpoDocumentPicker,
   loadExpoFileSystem,
@@ -225,7 +225,15 @@ export function parseImportedCourseJson(rawText: string, sourceName: string): Im
     tees,
   };
 
-  return { course, warnings, sourceName };
+  const normalizedCourse = courseWithUniqueTeeNames(course);
+  const hadRenamedTee = (normalizedCourse.tees ?? []).some(
+    (tee, index) => tee.name !== (course.tees ?? [])[index]?.name
+  );
+  if (hadRenamedTee) {
+    warnings.push('Duplicate tee names were renamed to keep each tee unique.');
+  }
+
+  return { course: normalizedCourse, warnings, sourceName };
 }
 
 export async function pickAndReadCourseJson(): Promise<ImportedCourseResult | null> {

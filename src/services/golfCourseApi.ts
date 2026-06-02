@@ -1,5 +1,14 @@
 // src/services/golfCourseApi.ts
-import { Course, CourseHole, CourseTee, TeeColor, isValidCourse, makeDefaultCourse, sumHolePar } from '../core/course';
+import {
+  Course,
+  CourseHole,
+  CourseTee,
+  TeeColor,
+  courseWithUniqueTeeNames,
+  isValidCourse,
+  makeDefaultCourse,
+  sumHolePar,
+} from '../core/course';
 import { loadCourseDetailsCache, saveCourseDetailsCache } from '../storage/courseDetailsCache';
 import type {
   GolfCourseApiCourse,
@@ -337,18 +346,19 @@ export function mapApiCourseToCourse(courseDetails: GolfCourseApiCourse | any): 
   };
 
   if (hasApiHoles) {
-    if (isValidCourse(candidate)) return candidate;
-    return { ...candidate };
+    const normalizedCandidate = courseWithUniqueTeeNames(candidate);
+    if (isValidCourse(normalizedCandidate)) return normalizedCandidate;
+    return { ...normalizedCandidate };
   }
 
-  return {
+  return courseWithUniqueTeeNames({
     ...makeDefaultCourse(),
     id,
     name,
     holesNote: defaultNote,
     scorecardSource: 'default',
     strokeIndexSource: 'default',
-  };
+  });
 }
 
 export async function getCourse(courseId: string, opts: FetchOpts): Promise<Course> {

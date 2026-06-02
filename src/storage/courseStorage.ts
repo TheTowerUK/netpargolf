@@ -2,6 +2,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Course } from '../core/course';
+import { courseWithUniqueTeeNames } from '../core/course';
 
 const LEGACY_KEY = 'netpargolf.course.v1';
 const COURSES_KEY = 'netpargolf.courses.v1';
@@ -42,7 +43,11 @@ export async function listCourses(): Promise<StoredCourse[]> {
   try {
     const arr = JSON.parse(raw) as StoredCourse[];
     const list = Array.isArray(arr) ? arr : [];
-    return [...list].sort((a, b) => {
+    const normalized = list.map((entry) => ({
+      ...entry,
+      course: courseWithUniqueTeeNames(entry.course),
+    }));
+    return [...normalized].sort((a, b) => {
       if (a.isFavorite !== b.isFavorite) return a.isFavorite ? -1 : 1;
       return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
     });
@@ -53,13 +58,17 @@ export async function listCourses(): Promise<StoredCourse[]> {
 
 export async function upsertCourse(course: Course): Promise<string> {
   await ensureMigrated();
-  const id = course.id && course.id !== 'default-course' ? course.id : `course-${Date.now()}`;
+  const normalizedCourse = courseWithUniqueTeeNames(course);
+  const id =
+    normalizedCourse.id && normalizedCourse.id !== 'default-course'
+      ? normalizedCourse.id
+      : `course-${Date.now()}`;
   const courses = await listCourses();
   const idx = courses.findIndex((c) => c.id === id);
   const now = Date.now();
   const entry: StoredCourse = {
     id,
-    course: { ...course, id },
+    course: { ...normalizedCourse, id },
     isFavorite: idx >= 0 ? courses[idx].isFavorite : false,
     updatedAt: now,
   };
