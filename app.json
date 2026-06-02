@@ -16,13 +16,13 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.thetower.netpargolf",
-      "buildNumber": "14",
+      "buildNumber": "26",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
-      "versionCode": 10,
+      "versionCode": 26,
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#ffffff"
